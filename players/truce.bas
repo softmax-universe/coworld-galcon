@@ -14,7 +14,9 @@
 ' walks to the own planet nearest the enemy.
 dim dist(16383)
 dim pending(127)
-dim pendingTick(127)
+dim pressure(127)
+dim contested(127)
+dim avoidUntil(127)
 dim truce(16)
 dim breaker(16)
 dim asked(16)
@@ -60,11 +62,24 @@ self = selfPlayer()
 tick = worldTick()
 count = planetCount()
 
-' Forget launches that have landed.
+' Read actual fleets so delayed arrivals never look like missing launches.
 q = 0
 while q < count
-  if pending(q) > 0 and pendingTick(q) <= tick then
-    pending(q) = 0
+  pending(q) = incoming(q, self)
+  pressure(q) = 0
+  attackers = 0
+  o = 1
+  while o <= playerCount()
+    if o <> self and o <> owner(q) and incoming(q, o) > 0 then
+      pressure(q) = pressure(q) + incoming(q, o)
+      attackers = attackers + 1
+    end if
+    o = o + 1
+  wend
+  defenders = ships(q) + incoming(q, owner(q))
+  contested(q) = 0
+  if pressure(q) >= defenders + 2 or attackers >= 2 and pressure(q) >= 10 then
+    contested(q) = 1
   end if
   q = q + 1
 wend
@@ -124,6 +139,9 @@ end if
 p = 0
 while p < count
   if lastOwner(p) <> owner(p) then
+    if lastOwner(p) > 0 and tick - ownedSince(p) <= 256 then
+      avoidUntil(p) = tick + 256
+    end if
     ownedSince(p) = tick
   end if
   lastOwner(p) = owner(p)
@@ -261,7 +279,7 @@ if partners = 0 and said = 0 and tick >= 64 and tick <= 960 then
   wend
 end if
 
-' The staging planet: our planet nearest to any enemy planet.
+' Stage near an enemy target that is not already covered or contested.
 front = -1
 frontDist = 1000000
 p = 0
@@ -269,7 +287,7 @@ while p < count
   if owner(p) = self then
     q = 0
     while q < count
-      if owner(q) <> self and owner(q) <> 0 and truce(owner(q)) = 0 then
+      if owner(q) <> self and owner(q) <> 0 and truce(owner(q)) = 0 and contested(q) = 0 and tick >= avoidUntil(q) and pending(q) < ships(q) + incoming(q, owner(q)) + 2 then
         if dist(p * 128 + q) < frontDist then
           frontDist = dist(p * 128 + q)
           front = p
@@ -305,14 +323,11 @@ while p < count
       bestNeed = 0
       q = 0
       while q < count
-        if owner(q) <> self and truce(owner(q)) = 0 then
+        if owner(q) <> self and truce(owner(q)) = 0 and contested(q) = 0 and tick >= avoidUntil(q) then
           eta = dist(p * 128 + q)
-          need = ships(q) + 2 + (production(q) * morale(q) * eta) \ 160000 - pending(q)
-          if need < 1 then
-            need = 1
-          end if
-          if need <= avail then
-            score = (production(q) + 12) * 1000 \ ((need + 4) * (eta + 48))
+          need = ships(q) + incoming(q, owner(q)) + 2 + (production(q) * morale(q) * eta) \ 160000 - pending(q)
+          if need > 0 and need <= avail then
+            score = (production(q) + 12) * 1000 \ ((need + pressure(q) + 4) * (eta + 48))
             if breaker(owner(q)) = 1 then
               score = score * 3
             end if
@@ -330,7 +345,6 @@ while p < count
         if sent > 0 then
           avail = avail - sent
           pending(best) = pending(best) + sent
-          pendingTick(best) = tick + dist(p * 128 + best) + 8
         else
           avail = 0
         end if

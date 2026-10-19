@@ -104,6 +104,14 @@ proc buildHost*(world: World, brain: Brain, owner: int): Host =
   field("y", p.y.toInt)
   field("ready", int(p.frame mod 16 == 0))
   field("neighborCount", p.neighbors.len)
+  query("incoming", 2):
+    let
+      planet = args[0].int
+      player = args[1].int
+    if not world.validPlanet(planet) or player < 0 or
+      player > world.setup.players:
+        return 0
+    world.planets[planet].incoming[player].int32
   query("neighbor", 2):
     let
       source = args[0].int

@@ -14,6 +14,7 @@ const
   MaxPlanets* = 128
   CompactPlanetThreshold* = 52
   PlanetGap* = 18
+  ShipRadius* = 6
   MaxChatLines* = 16
   MaxChatBytes* = 1024
   ColorNames*: array[MaxPlayers + 1, string] = [
@@ -126,6 +127,8 @@ type
     gridHeads*: array[MaxGridCells, uint16]
     gridPlanetHeads*: array[MaxGridCells, uint16]
     gridNext*: array[MaxBodies, uint16]
+    spawnRadii*: array[BodyKind, Fixed]
+    spawnGridReady*: bool
     bodyCursor*, activeShips*: int
     endWait*, winner*, revision*, captures*, impacts*: int
     orders*: seq[Order]

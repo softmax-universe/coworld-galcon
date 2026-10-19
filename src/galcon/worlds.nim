@@ -281,35 +281,51 @@ proc validPlanet*(world: World, index: int): bool {.raises: [].} =
   index >= 0 and index < world.planets.len
 
 proc launch*(world: World, player, source, target, amount: int): int =
-  ## Launches authorized ships without exceeding the original 4096 slots.
+  ## Launches only ships that fit in clear positions around the source rim.
   if player < 1 or player > world.setup.players or
     not world.validPlanet(source) or not world.validPlanet(target) or
     source == target or amount <= 0:
       return
   if world.planets[source].owner != player:
     return
-  let count = min(amount, world.planets[source].shipCount)
-  for i in 0 ..< count:
+  let
+    count = min(amount, world.planets[source].shipCount)
+    a = world.planets[source]
+    b = world.planets[target]
+    radius = a.radius + ShipRadius + 1
+    positions = radius * 6 div (ShipRadius * 2 + 1)
+    heading = arctan2(b.y - a.y, b.x - a.x)
+  if count <= 0:
+    return
+  for i in 0 ..< positions:
+    if result == count:
+      break
+    let
+      offset = if i mod 2 == 1: (i + 1) div 2 else: -(i div 2)
+      angle = heading + FixedTau * fixed(offset.int32) /
+        fixed(positions.int32)
+      x = a.x + cos(angle) * fixed(radius.int32)
+      y = a.y + sin(angle) * fixed(radius.int32)
+    if not world.spawnClear(x, y):
+      continue
     let slot = world.freeBody()
     if slot < 0:
       break
-    let
-      a = world.planets[source]
-      b = world.planets[target]
     world.bodies[slot] = Body(
       active: true,
       kind: ShipBody,
-      x: a.x,
-      y: a.y,
-      previousX: a.x,
-      previousY: a.y,
+      x: x,
+      y: y,
+      previousX: x,
+      previousY: y,
       targetX: b.x,
       targetY: b.y,
       target: b.body,
-      radius: fixed(6),
+      radius: fixed(ShipRadius),
       weight: 1,
       speed: FixedOne
     )
+    world.indexSpawn(slot)
     world.ships[slot] = Ship(owner: player, target: target)
     world.planets[source].ships -= stock(1)
     inc world.planets[target].incoming[player]

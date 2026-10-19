@@ -209,7 +209,7 @@ block:
   for i, planet in world.planets:
     if planet.owner == 1:
       owned.add i
-      world.planets[i].ships = stock(100)
+      world.planets[i].ships = stock(2)
   for index in owned[0 .. 1]:
     let p = world.planets[index]
     input.press(world, p.x.toInt.int, p.y.toInt.int)
@@ -219,9 +219,9 @@ block:
     anchor = world.planets[world.ownerPlanet(2)]
     target = world.planets[^1]
   input.press(world, anchor.x.toInt.int, anchor.y.toInt.int)
-  doAssert input.release(world, target.x.toInt.int, target.y.toInt.int) == 100
-  doAssert world.planets[owned[0]].shipCount == 50
-  doAssert world.planets[owned[1]].shipCount == 50
+  doAssert input.release(world, target.x.toInt.int, target.y.toInt.int) == 2
+  doAssert world.planets[owned[0]].shipCount == 1
+  doAssert world.planets[owned[1]].shipCount == 1
   let own = world.planets[owned[0]]
   input.press(world, own.x.toInt.int, own.y.toInt.int, double = true)
   discard input.release(world, own.x.toInt.int, own.y.toInt.int)
@@ -295,8 +295,8 @@ block:
   for i in 0 ..< loaded.hashes.len:
     loaded.replayTick(playback, cursor)
   doAssert playback.fingerprint() == a.world.fingerprint()
-  doAssert a.world.fingerprint() == 4340886293693051240'u64
   echo "Golden deterministic state: ", a.world.fingerprint()
+  doAssert a.world.fingerprint() == 1708288313738586754'u64
   writeFile(Root / "build" / "deterministic.hash", $a.world.fingerprint())
   let damaged = loaded.clone()
   damaged.hashes[0] = damaged.hashes[0] xor 1
@@ -330,16 +330,104 @@ when defined(nimTypeNames):
     doAssert session.world.captures > 0
     echo "Allocation-free ticks: ", session.world.tick - 2048
 
-echo "Original bounded ship pool remains bounded"
+echo "Launches require clear space and retain ships when the rim is full"
+block:
+  let
+    world = duel()
+    source = world.ownerPlanet(1)
+    target = world.ownerPlanet(2)
+  for planet in world.planets:
+    planet.production = 0
+  world.planets[source].ships = stock(10000)
+  let
+    playback = world.clone()
+    sent = world.launch(1, source, target, 10000)
+  doAssert sent > 1 and sent < 100
+  doAssert world.planets[source].ships == stock(10000 - sent)
+  doAssert world.planets[target].incoming[1] == sent
+  doAssert world.activeShips == sent
+  doAssert playback.launch(1, source, target, sent) == sent
+  doAssert world.fingerprint() == playback.fingerprint()
+  for i, body in world.bodies:
+    if not body.active or body.kind != ShipBody:
+      continue
+    doAssert body.x >= fixed(ShipRadius)
+    doAssert body.x <= fixed(Width - ShipRadius)
+    doAssert body.y >= fixed(ShipRadius)
+    doAssert body.y <= fixed(Height - ShipRadius)
+    for j, other in world.bodies:
+      if i == j or not other.active:
+        continue
+      let distance = int32(body.radius + other.radius).int64
+      doAssert lengthSquared(body.x - other.x, body.y - other.y) >=
+        distance * distance
+  let blocked = world.fingerprint()
+  doAssert world.launch(1, source, target, 10000) == 0
+  doAssert world.launch(1, source, target, 1) == 0
+  doAssert world.fingerprint() == blocked
+  var resumed = false
+  for tick in 0 ..< 64:
+    world.advance()
+    playback.advance()
+    let launched = world.launch(1, source, target, 10000)
+    if launched > 0:
+      doAssert playback.launch(1, source, target, launched) == launched
+      doAssert world.fingerprint() == playback.fingerprint()
+      resumed = true
+      break
+  doAssert resumed, "Ships must launch again as the surrounding fleet moves."
+block:
+  let
+    world = duel()
+    source = world.ownerPlanet(1)
+    target = world.ownerPlanet(2)
+    body = world.planets[source].body
+  world.bodies[body].radius += fixed(ShipRadius * 3)
+  let blocked = world.fingerprint()
+  doAssert world.launch(1, source, target, 100) == 0
+  doAssert world.fingerprint() == blocked
+
+echo "Spatial spawn queries match a full scan for ships and planets"
+block:
+  let world = newWorld(configuredSetup(9, Easy, 16, 69))
+  for owner in 1 .. 16:
+    let source = world.ownerPlanet(owner)
+    world.planets[source].ships = stock(10000)
+    discard world.launch(owner, source, (source + 1) mod 69, 10000)
+  for y in countup(-6, Height + 6, 7):
+    for x in countup(-6, Width + 6, 7):
+      var clear = x >= ShipRadius and x <= Width - ShipRadius and
+        y >= ShipRadius and y <= Height - ShipRadius
+      for body in world.bodies:
+        if not body.active:
+          continue
+        let distance = int32(fixed(ShipRadius) + body.radius).int64
+        if lengthSquared(body.x - fixed(x.int32), body.y - fixed(y.int32)) <
+          distance * distance:
+            clear = false
+            break
+      doAssert world.spawnClear(fixed(x.int32), fixed(y.int32)) == clear
+
+echo "Full ship pools preserve replay state after partial or blocked launches"
 block:
   let world = duel()
   let source = world.ownerPlanet(1)
   world.planets[source].ships = stock(MaxBodies + 100)
+  for i in 0 ..< MaxBodies - 2:
+    if world.bodies[i].active:
+      continue
+    world.bodies[i] = Body(
+      active: true,
+      kind: ShipBody,
+      x: fixed(Width - ShipRadius),
+      y: fixed(Height - ShipRadius),
+      radius: fixed(ShipRadius)
+    )
+    world.ships[i] = Ship(owner: 1, target: world.ownerPlanet(2))
+    inc world.activeShips
   let playback = world.clone()
-  doAssert world.launch(1, source, world.ownerPlanet(2), MaxBodies + 100) ==
-    MaxBodies - world.planets.len
-  doAssert playback.launch(1, source, playback.ownerPlanet(2),
-    MaxBodies - world.planets.len) == MaxBodies - world.planets.len
+  doAssert world.launch(1, source, world.ownerPlanet(2), MaxBodies + 100) == 2
+  doAssert playback.launch(1, source, playback.ownerPlanet(2), 2) == 2
   doAssert world.fingerprint() == playback.fingerprint()
   doAssert world.activeShips == MaxBodies - world.planets.len
   let full = world.fingerprint()
@@ -501,11 +589,12 @@ when not defined(headless):
   testSummaries()
   testRasters()
 
-import test_spaces, test_chats, test_effects, test_fairness, test_rules
+import test_spaces, test_chats, test_effects, test_fairness, test_rules, test_bots
 testSpaces()
 testChats()
 testEffects()
 testFairness()
 testRules()
+testBots()
 
 echo "All Galcon checks passed"

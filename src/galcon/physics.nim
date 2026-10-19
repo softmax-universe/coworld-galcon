@@ -11,6 +11,72 @@ proc freeBody*(world: World): int =
   world.bodyCursor = cursor
   -1
 
+proc prepareSpawns(world: World) =
+  ## Indexes current body positions once between movement phases.
+  if world.spawnGridReady:
+    return
+  var count = 0
+  world.spawnRadii = [FixedZero, FixedZero]
+  for i in 0 ..< MaxBodies:
+    let body = addr world.bodies[i]
+    if not body.active:
+      continue
+    world.activeBodies[count] = i.uint16
+    inc count
+    world.spatialX[i] = int32(body.x)
+    world.spatialY[i] = int32(body.y)
+    world.spawnRadii[body.kind] = max(
+      world.spawnRadii[body.kind], body.radius
+    )
+  world.buildGrid(count, 16)
+  world.spawnGridReady = true
+
+proc spawnClear*(world: World, x, y: Fixed): bool =
+  ## Rejects ship positions outside the map or overlapping any active body.
+  let radius = fixed(ShipRadius)
+  if x < radius or y < radius or
+    x > fixed(Width) - radius or y > fixed(Height) - radius:
+      return false
+  world.prepareSpawns()
+  const
+    Columns = (Width + 15) div 16
+    Rows = (Height + 15) div 16
+  for group in BodyKind:
+    let
+      reach = int32(radius).int64 + int32(world.spawnRadii[group])
+      left = cell(int32(x).int64 - reach, 16, Columns)
+      right = cell(int32(x).int64 + reach, 16, Columns)
+      top = cell(int32(y).int64 - reach, 16, Rows)
+      bottom = cell(int32(y).int64 + reach, 16, Rows)
+    for row in top .. bottom:
+      for column in left .. right:
+        let index = row * Columns + column
+        var cursor =
+          if group == PlanetBody: world.gridPlanetHeads[index]
+          else: world.gridHeads[index]
+        while cursor != 0:
+          let
+            body = addr world.bodies[cursor.int - 1]
+            dx = body.x - x
+            dy = body.y - y
+            distance = int32(radius + body.radius).int64
+          if lengthSquared(dx, dy) < distance * distance:
+            return false
+          cursor = world.gridNext[cursor.int - 1]
+  true
+
+proc indexSpawn*(world: World, slot: int) =
+  ## Makes a newly spawned ship block later launches in the same tick.
+  const Columns = (Width + 15) div 16
+  let
+    body = addr world.bodies[slot]
+    column = cell(int32(body.x), 16, Columns)
+    row = cell(int32(body.y), 16, (Height + 15) div 16)
+    index = row * Columns + column
+  world.gridNext[slot] = world.gridHeads[index]
+  world.gridHeads[index] = (slot + 1).uint16
+  world.spawnRadii[ShipBody] = max(world.spawnRadii[ShipBody], body.radius)
+
 proc collide(world: World, first, second: int) {.inline.} =
   ## Applies the original weighted fixed-point response to one candidate pair.
   let
@@ -53,6 +119,7 @@ proc collide(world: World, first, second: int) {.inline.} =
 
 proc moveBodies*(world: World, kind = AllPairs) {.measure.} =
   ## Moves ships and resolves candidates from a deterministic tick snapshot.
+  world.spawnGridReady = false
   var
     activeCount = 0
     maximumRadii: array[BodyKind, int32]
