@@ -22,7 +22,7 @@ type
     recording*, replay*: Recording
     replayCursor*: int
     replayChatCursor*: int
-    playback*, done*, keepHistory*: bool
+    playback*, done*, keepHistory*, networked*: bool
     human*: int
     maximumTicks*: int32
     recordPath*: string
@@ -66,7 +66,7 @@ proc canCommand*(session: Session): bool =
   ## Allows human orders only on the active live frontier.
   session.human > 0 and not session.inHistory and not session.done
 
-proc captureCheckpoint(session: Session) =
+proc captureCheckpoint*(session: Session) =
   ## Keeps at most 64 isolated checkpoints, thinning older spacing as needed.
   if not session.keepHistory:
     return
@@ -83,8 +83,14 @@ proc captureCheckpoint(session: Session) =
     session.checkpointSpacing *= 2
   session.checkpoints.add Checkpoint(world: world.clone())
 
-proc newSession*(options: Options): Session =
+proc newSession*(
+    options: Options, policies: seq[string] = @[],
+    labels: seq[string] = @[], human = -1, explicitRoster = false
+): Session =
   ## Creates a human game, BASIC match, or seekable deterministic replay.
+  if explicitRoster and (policies.len != options.setup.players or
+    labels.len != options.setup.players or human notin 0 .. options.setup.players):
+      raise newException(GalconError, "Invalid explicit player roster")
   result = Session(
     maximumTicks: options.game.maximumTicks,
     recordPath: options.game.recordPath,
@@ -134,13 +140,21 @@ proc newSession*(options: Options): Session =
   let needed = options.setup.players - int(result.human > 0)
   if sources.len > 0 and sources.len != needed:
     raise newException(GalconError, "Expected " & $needed & " BASIC policies")
+  if explicitRoster:
+    result.human = human
   var slot = 0
   for owner in 1 .. options.setup.players:
     result.names[owner] = "Human"
     if owner != result.human:
-      let source = if sources.len == 0: BaselineSource else: sources[slot]
-      result.names[owner] = if names.len == 0: "Classic Bot" else: names[slot]
-      if options.setup.counts[owner] > 0:
+      let source =
+        if explicitRoster: policies[owner - 1]
+        elif sources.len == 0: BaselineSource
+        else: sources[slot]
+      result.names[owner] =
+        if explicitRoster: labels[owner - 1]
+        elif names.len == 0: "Classic Bot"
+        else: names[slot]
+      if options.setup.counts[owner] > 0 and source.len > 0:
         result.brains[owner] = newBrain(result.liveWorld, owner, source,
           result.chat)
       inc slot
@@ -149,6 +163,9 @@ proc newSession*(options: Options): Session =
         result.names[owner] = viewerName(
           coworld.config.players[owner - 1].name, owner - 1
         )
+  if explicitRoster:
+    for owner in 1 .. options.setup.players:
+      result.names[owner] = labels[owner - 1]
   result.recording.names = newSeq[string](options.setup.players + 1)
   for owner in 1 .. options.setup.players:
     result.recording.names[owner] = result.names[owner]
@@ -214,7 +231,7 @@ proc step*(session: Session) {.measure.} =
     if session.world.tick >= session.liveWorld.tick:
       session.returnToLive()
     return
-  if session.done:
+  if session.done or session.networked:
     return
   if session.liveWorld.winner >= 0 or
     session.liveWorld.tick >= session.maximumTicks:

@@ -96,6 +96,7 @@ type
     radius*, impacts*, captures*: int
     captured*: bool
   ArrivalObserver* = proc(arrival: Arrival)
+  SubmitOrder* = proc(player, source, target, value: int, percent: bool): int
   Order* = object
     tick*: int32
     player*, source*, target*, count*: int32

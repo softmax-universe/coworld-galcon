@@ -11,6 +11,7 @@ const
 
 type
   Brain* = ref object
+    submit*: SubmitOrder
     runtime*: Runtime
     owner*: int
     chat*: ChatHub
@@ -159,6 +160,9 @@ proc buildHost*(world: World, brain: Brain, owner: int): Host =
     3,
     proc(args: openArray[int32]): int32 =
       ## Refuses commands for another player's planets.
+      if brain.submit != nil:
+        return brain.submit(owner, args[0].int, args[1].int,
+          args[2].int, false).int32
       world.launch(owner, args[0].int, args[1].int, args[2].int).int32
   )
   discard result.addFunction(
@@ -166,6 +170,9 @@ proc buildHost*(world: World, brain: Brain, owner: int): Host =
     3,
     proc(args: openArray[int32]): int32 =
       ## Applies the same percentage command used by the human controls.
+      if brain.submit != nil:
+        return brain.submit(owner, args[0].int, args[1].int,
+          args[2].int, true).int32
       world.send(owner, args[0].int, args[1].int, args[2].int).int32
   )
 

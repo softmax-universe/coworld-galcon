@@ -22,20 +22,30 @@ type
   Presentation* = object
     uiScale*, boardScale*: float32
     boardOrigin*: Vec2
-    panel*: GameUiPanel
+    panel*, sidebar*: GameUiPanel
 
-proc presentation*(size: Vec2): Presentation =
-  ## Fits an unchanged 640 by 480 playfield above the shared replay ribbon.
+proc presentation*(size: Vec2, showTransport = true): Presentation =
+  ## Fits the board and sidebar, reserving a bottom ribbon only for replays.
   result.uiScale = min(size.x / 1360, size.y / 600)
   result.uiScale = max(result.uiScale, 0.01'f)
   let
     logical = size / result.uiScale
-    available = vec2(logical.x, max(logical.y - TransportHeight, 1))
-  result.boardScale = min(available.x / 640, available.y / 480)
-  result.boardOrigin = (available - vec2(640, 480) * result.boardScale) / 2
+    transportHeight = if showTransport: TransportHeight else: 0.0'f
+    available = vec2(logical.x, max(logical.y - transportHeight, 1))
+    sidebarWidth = 300.0'f
+    gap = 16.0'f
+  result.boardScale = min(
+    max(1.0'f, available.x - sidebarWidth - gap) / 640,
+    available.y / 480
+  )
+  let
+    boardSize = vec2(640, 480) * result.boardScale
+    origin = (available - vec2(sidebarWidth + gap + boardSize.x, boardSize.y)) / 2
+  result.sidebar = GameUiPanel(origin: origin, size: vec2(sidebarWidth, boardSize.y))
+  result.boardOrigin = origin + vec2(sidebarWidth + gap, 0)
   result.panel = GameUiPanel(
     origin: vec2(0, available.y),
-    size: vec2(logical.x, TransportHeight)
+    size: vec2(logical.x, transportHeight)
   )
 
 proc sync*(transport: var Transport, session: Session) =
@@ -65,6 +75,8 @@ proc advancePlayback*(
     transport.player.targetTick < 0:
       transport.player.accumulator = 1.0'f / TickRate
   while transport.player.shouldTick(frameStart):
+    if session.networked and not session.inHistory:
+      break
     session.step()
     transport.sync(session)
     if holdAtEnd and transport.player.over:

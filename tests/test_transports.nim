@@ -17,6 +17,9 @@ proc testTransports*() =
     doAssert slots.scrub.size.x > 0
     doAssert slots.controls[0].origin.x >= 0
     doAssert slots.tick.origin.x + slots.tick.size.x <= logical.x
+    doAssert layout.sidebar.origin.x >= 0
+    doAssert layout.sidebar.origin.x + layout.sidebar.size.x < layout.boardOrigin.x
+    doAssert layout.sidebar.origin.y + layout.sidebar.size.y <= layout.panel.origin.y
     doAssert layout.boardOrigin.x >= 0
     doAssert layout.boardOrigin.y >= 0
     doAssert layout.boardOrigin.y + 480 * layout.boardScale <=

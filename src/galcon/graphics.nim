@@ -2,19 +2,16 @@ import
   std/[os, math, tables, strutils, monotimes, times, unicode],
   silky, pixie, vmath, chroma, bumpy, opengl, slappy,
   polyworld/profiles as gameProfiles,
-  polyworld/viewers,
-  common, controls, textures, options, sessions, transports, chats, effects,
-  summaries, rasters
+  polyworld/[viewers, inputs, displays, chrome],
+  common, worlds, controls, textures, options, sessions, transports, chats, effects,
+  summaries, rasters, frontends, themes, multiplayer
 
 const
   Green = rgbx(85, 255, 85, 255)
   White = rgbx(255, 255, 255, 255)
   Gray = rgbx(170, 170, 170, 255)
   Shadow = rgbx(0, 0, 0, 255)
-  PlayerListScale = 0.8'f
-  PlayerListWidth = 200.0'f
-  PlayerListRowHeight = 16.0'f
-  PlayerListBackground = rgbx(1, 5, 10, 102)
+  PlayerListRowHeight = 22.0'f
   TutorialTexts = [
     "you are the green player.\n" &
       "click and hold on your planet,\n" &
@@ -49,8 +46,9 @@ const
 
 type
   Screen = enum
-    MenuScreen, HelpScreen, GameScreen, TutorialScreen, EndScreen
+    MenuScreen, HelpScreen, GameScreen, TutorialScreen, EndScreen, FrontScreen
   View = ref object
+    front: Frontend
     window: Window
     sk: Silky
     options: Options
@@ -191,7 +189,7 @@ proc updateBoard(view: View) {.measure.} =
     view.sk.finishRasterUpdates()
   view.boardRevision = view.session.world.revision
 
-proc start(view: View, tutorial = 0) =
+proc start(view: View, tutorial = 0, provided: Session = nil) =
   ## Starts a seeded match or one of the original three tutorial maps.
   if view.session != nil:
     view.session.observer = nil
@@ -199,7 +197,7 @@ proc start(view: View, tutorial = 0) =
     view.session.finish()
   var options = view.options.clone()
   options.setup = options.matchSetup(view.difficulty, tutorial)
-  view.session = newSession(options)
+  view.session = if provided == nil: newSession(options) else: provided
   view.card = Card()
   for owner in 1 .. MaxPlayers:
     view.rosterLabels[owner] = ""
@@ -256,18 +254,32 @@ proc start(view: View, tutorial = 0) =
     view.musicSource.play()
 
 proc menuAction(view: View) =
-  ## Activates the selected item in the original four-item menu.
+  ## Opens the selected Galcon menu or tutorial.
   case view.selection
   of 0: view.start(1)
-  of 1: view.start()
-  of 2: view.screen = HelpScreen
-  of 3: view.closing = true
+  of 1:
+    view.front.page = SingleMenu
+    view.screen = FrontScreen
+  of 2:
+    view.front.page = MultiplayerMenu
+    view.screen = FrontScreen
+  of 3:
+    view.front.page = SettingsMenu
+    view.screen = FrontScreen
+  of 4: view.screen = HelpScreen
+  of 5: view.closing = true
   else: discard
 
 proc returnToMenu(view: View) =
   ## Saves an interrupted local recording and restores the original menu.
   view.session.finish()
-  view.screen = MenuScreen
+  if view.session.networked and view.front.connection != nil and
+    view.front.prepared.finished:
+      view.front.page = LobbyMenu
+      view.screen = FrontScreen
+  else:
+    view.front.leave()
+    view.screen = MenuScreen
   if view.musicSource != nil:
     view.musicSource.stop()
 
@@ -275,13 +287,11 @@ proc drawMenu(view: View) =
   ## Reproduces the original title, menu arrangement, and author credit.
   view.sk.drawRasterImage("Background", view.offset, vec2(Width, Height))
   view.text("Title", "galcon 2006", vec2(0, 8), Green, centered = true)
-  let items = ["tutorial", "play < " & ($view.difficulty).toLowerAscii() &
-    " >", "help", "quit"]
+  let items = ["tutorial", "single player", "multiplayer",
+    "settings", "help", "quit"]
   for i, item in items:
-    view.text("Menu", item, vec2(0, 142 + i.float32 * 48),
+    view.text("Menu", item, vec2(0, 120 + i.float32 * 46),
       if i == view.selection: White else: Gray, centered = true)
-  view.text("Hud", "use left/right to change level", vec2(0, 416), Gray,
-    centered = true)
   view.text("Hud", "ludum dare #8 - phil hassey", vec2(0, 440), Gray,
     centered = true)
 
@@ -296,7 +306,13 @@ proc drawShips(view: View) =
         (body.y - body.previousY).toFloat32,
         (body.x - body.previousX).toFloat32
       )
-      center = view.offset + vec2(body.x.toFloat32, body.y.toFloat32)
+      blend = if interpolateVisuals and view.transport.player.playing:
+        clamp(view.transport.player.accumulator * TickRate, 0.0'f, 1.0'f)
+        else: 1.0'f
+      center = view.offset + vec2(
+        body.previousX.toFloat32 + (body.x - body.previousX).toFloat32 * blend,
+        body.previousY.toFloat32 + (body.y - body.previousY).toFloat32 * blend
+      )
       color = ownerColor(world.ships[i].owner)
       a = center + vec2(math.cos(heading), math.sin(heading)) * 6
       back = center - vec2(math.cos(heading), math.sin(heading)) * 3
@@ -322,50 +338,35 @@ proc drawShips(view: View) =
       position.y.toFloat32 - size.y / 2
     ), size, rgbx(alpha, alpha, alpha, alpha))
 
-proc playerListBottom(view: View): float32 =
-  ## Reserves the compact roster's height for hover information and chat.
-  if view.screen == TutorialScreen:
-    return 0
-  8 + (16 + view.session.world.setup.players.float32 *
-    PlayerListRowHeight) * PlayerListScale
-
 proc drawChat(view: View) =
-  ## Shows recent global messages with color names and wrapped readable text.
-  let world = view.session.world
-  var y = max(36.0'f, view.playerListBottom() +
-    (if view.controls.hover >= 0: 30.0'f else: 8.0'f))
-  for i in max(0, world.chatCount - 5) ..< world.chatCount:
-    let message = world.chats[(world.chatFirst + i) mod MaxChatLines]
-    if world.tick - message.tick > ChatLifetime:
-      continue
-    let available = min(48.0'f, 404.0'f - y)
-    if available <= 0:
-      break
-    let
-      value = view.session.displayName(message.player.int) & ": " &
-        message.chatText()
-      at = view.offset + vec2(10, y)
-    discard view.sk.drawRasterText(
-      "Chat", value, at + vec2(1, 1), Shadow,
-      maxWidth = 320, maxHeight = available, wordWrap = true
-    )
-    let size = view.sk.drawRasterText(
-      "Chat", value, at, ownerColor(message.player.int),
-      maxWidth = 320, maxHeight = available, wordWrap = true
-    )
-    y += min(size.y, available) + 6
+  ## Fits the newest global messages inside the sidebar, outside the playfield.
+  let
+    world = view.session.world
+    panel = view.presentation.sidebar
+    width = panel.size.x - 24
+    top = panel.origin.y + 52 + world.setup.players.float32 * PlayerListRowHeight
+  var bottom = panel.origin.y + panel.size.y - 16
   if view.chatting:
+    bottom -= 48
+    discard view.sk.drawRasterText("Chat", "Global: " & view.chatInput & "|",
+      vec2(panel.origin.x + 12, bottom + 8), White,
+      maxWidth = width, maxHeight = 40, wordWrap = true)
+  for i in countdown(world.chatCount - 1, max(0, world.chatCount - 5)):
     let
-      value = "Global: " & view.chatInput & "|"
-      at = view.offset + vec2(10, 424)
-    discard view.sk.drawRasterText(
-      "Chat", value, at + vec2(1, 1), Shadow,
-      maxWidth = Width - 20, maxHeight = 20
-    )
-    discard view.sk.drawRasterText(
-      "Chat", value, at, White,
-      maxWidth = Width - 20, maxHeight = 20
-    )
+      message = world.chats[(world.chatFirst + i) mod MaxChatLines]
+      value = view.session.displayName(message.player.int) & ": " & message.chatText()
+      firstVertex = view.sk.drawer.layers[NormalLayer].len
+      available = min(58.0'f, bottom - top)
+    if available < 16:
+      break
+    let size = view.sk.drawRasterText("Chat", value,
+      vec2(panel.origin.x + 12, top), ownerColor(message.player.int),
+      maxWidth = width, maxHeight = available, wordWrap = true)
+    let height = min(size.y, available)
+    for vertex in firstVertex ..< view.sk.drawer.layers[NormalLayer].len:
+      view.sk.drawer.layers[NormalLayer][vertex].pos.y += bottom - top - height
+      view.sk.drawer.layers[NormalLayer][vertex].clipPos.y += bottom - top - height
+    bottom -= height + 8
 
 proc disc(view: View, center: Vec2, radius: float32, color: ColorRGBX) =
   ## Fills a faction marker with the existing solid-color triangle batch.
@@ -423,21 +424,22 @@ proc cardPanel(
   view.sk.drawTriangle([center, previous, first],
     [sample, sample, sample], [color, color, color])
 
-proc drawPlayers(view: View) =
-  ## Shows native-font faction chips and ship totals at eighty-percent size.
+proc drawSidebar(view: View) =
+  ## Keeps player identities, totals, and chat beside the map at every resolution.
   if view.card.shown or view.screen == TutorialScreen:
     return
   let
     world = view.session.world
     sample = view.summary.samples[world.tick]
-    origin = view.offset + vec2(8)
-    firstVertex = view.sk.drawer.layers[NormalLayer].len
-    height = 16 + world.setup.players.float32 * PlayerListRowHeight
-  view.cardPanel(origin, vec2(PlayerListWidth, height), PlayerListBackground)
+    panel = view.presentation.sidebar
+    origin = panel.origin + vec2(12)
+  view.sk.pushClipRect(rect(panel.origin, panel.size))
+  view.sk.drawRect(panel.origin, panel.size, rgbx(4, 7, 15, 235))
+  discard view.sk.drawRasterText("Players", "players", origin, Green)
   for owner in 1 .. world.setup.players:
     if view.rosterLabels[owner].len == 0:
       view.rosterLabels[owner] = view.fitText(
-        "Players", view.session.displayName(owner), 118
+        "Players", view.session.displayName(owner), panel.size.x - 100
       )
     if view.rosterValues[owner].len == 0 or
       view.rosterCounts[owner] != sample.ships[owner]:
@@ -447,17 +449,15 @@ proc drawPlayers(view: View) =
           "Players", view.rosterValues[owner]
         ).x
     let
-      y = 16 + (owner - 1).float32 * PlayerListRowHeight
+      point = origin + vec2(0, 28 + (owner - 1).float32 * PlayerListRowHeight)
       tint = ownerColor(owner)
-    view.disc(origin + vec2(12, y), 4, tint)
-    view.text("Players", view.rosterLabels[owner],
-      vec2(32, 8 + y - 7), tint)
-    view.text("Players", view.rosterValues[owner],
-      vec2(8 + PlayerListWidth - 8 - view.rosterWidths[owner], 8 + y - 7),
-      tint)
-  for i in firstVertex ..< view.sk.drawer.layers[NormalLayer].len:
-    let vertex = addr view.sk.drawer.layers[NormalLayer][i]
-    vertex.pos = origin + (vertex.pos - origin) * PlayerListScale
+    view.disc(point + vec2(5, 7), 4, tint)
+    discard view.sk.drawRasterText("Players", view.rosterLabels[owner],
+      point + vec2(18, 0), tint)
+    discard view.sk.drawRasterText("Players", view.rosterValues[owner],
+      vec2(panel.origin.x + panel.size.x - 12 - view.rosterWidths[owner], point.y), tint)
+  view.drawChat()
+  view.sk.popClipRect()
 
 proc drawCard(view: View) =
   ## Draws the approved borderless native-font card on one shared ship scale.
@@ -581,16 +581,13 @@ proc drawGame(view: View) {.measure.} =
     let p = world.planets[view.controls.hover]
     view.text("Hover", p.name & "   Prod: " & $p.production &
       "   Morale: " & $p.morale & "   Ships: " & $p.shipCount,
-      vec2(8, max(4.0'f, view.playerListBottom() + 6)), Green,
+      vec2(8, 6), Green,
       maxWidth = Width.float32 - 16)
   if view.session.human > 0 and not view.session.inHistory:
     let status =
       "From: " & $selected & " planets   Ships: " & $sending &
         " (" & $view.controls.percent & "%)"
     view.text("Hud", status, vec2(0, 450), selectionColor, centered = true)
-  if not view.card.shown:
-    view.drawPlayers()
-    view.drawChat()
   case view.screen
   of TutorialScreen:
     view.centeredLines("tutorial #" & $view.tutorial,
@@ -618,14 +615,15 @@ proc handleInput(view: View) =
     x = floor(pointer.x).int
     y = floor(pointer.y).int
     onBoard = x in 0 ..< Width and y in 0 ..< Height
-    clicked = window.buttonPressed[MouseLeft] and (not game or onBoard)
+    clicked = (if game: window.actionPressed(SelectInput)
+      else: window.buttonPressed[MouseLeft]) and (not game or onBoard)
     entered = window.buttonPressed[KeyEnter]
-    shift = window.buttonDown[KeyLeftShift] or window.buttonDown[KeyRightShift]
+    shift = window.actionDown(ShiftInput)
   if entered and (window.buttonDown[KeyLeftAlt] or
     window.buttonDown[KeyRightAlt]):
       window.fullscreen = not window.fullscreen
       return
-  if window.buttonPressed[KeyF2]:
+  if window.actionPressed(TraceInput):
     gameProfiles.toggleRuntimeTrace()
   if window.buttonPressed[KeyF3] and view.musicSource != nil:
     view.musicEnabled = not view.musicEnabled
@@ -633,6 +631,10 @@ proc handleInput(view: View) =
       view.musicSource.play()
     else:
       view.musicSource.stop()
+  if window.actionPressed(FullscreenInput):
+    window.fullscreen = not window.fullscreen
+  if view.screen == FrontScreen:
+    return
   if view.chatting:
     if not view.session.canCommand or window.buttonPressed[KeyEscape]:
       view.chatting = false
@@ -655,33 +657,34 @@ proc handleInput(view: View) =
     if window.buttonPressed[KeyTab]:
       view.card.toggle()
       view.controls.holding = false
-    if window.buttonPressed[KeySpace] or window.buttonPressed[KeyF10]:
+    if window.actionPressed(PauseInput):
       view.transport.player.togglePlay()
+      if view.session.networked and not view.transport.player.playing and
+        not view.session.inHistory:
+          view.session.world = view.session.liveWorld.clone()
       view.controls.holding = false
   case view.screen
   of MenuScreen:
     if window.buttonPressed[KeyEscape]:
       view.closing = true
     if window.buttonPressed[KeyDown]:
-      view.selection = (view.selection + 1) mod 4
+      view.selection = (view.selection + 1) mod 6
     if window.buttonPressed[KeyUp]:
-      view.selection = (view.selection + 3) mod 4
-    if window.buttonPressed[KeyRight]:
-      view.difficulty = Difficulty((view.difficulty.ord + 1) mod 4)
-    if window.buttonPressed[KeyLeft]:
-      view.difficulty = Difficulty((view.difficulty.ord + 3) mod 4)
-    let overMenu = x in 80 .. 560 and y in 142 .. 334
+      view.selection = (view.selection + 5) mod 6
+    let overMenu = x in 80 .. 560 and y in 120 .. 396
     if overMenu and window.mouseDelta != ivec2(0, 0):
-      view.selection = clamp((y - 142) div 48, 0, 3)
+      view.selection = clamp((y - 120) div 46, 0, 5)
     if entered or (clicked and overMenu):
       view.menuAction()
+  of FrontScreen:
+    discard
   of HelpScreen:
     if clicked or entered or window.buttonPressed[KeyEscape]:
       view.screen = MenuScreen
   of TutorialScreen:
     if clicked or entered:
       view.screen = GameScreen
-    if window.buttonPressed[KeyEscape]:
+    if window.actionPressed(MenuInput):
       view.returnToMenu()
   of EndScreen:
     if entered:
@@ -689,10 +692,10 @@ proc handleInput(view: View) =
         view.start(view.tutorial + 1)
       else:
         view.returnToMenu()
-    if window.buttonPressed[KeyEscape]:
+    if window.actionPressed(MenuInput):
       view.returnToMenu()
   of GameScreen:
-    if window.buttonPressed[KeyEscape]:
+    if window.actionPressed(MenuInput):
       view.returnToMenu()
       return
     let keys = [Key0, Key1, Key2, Key3, Key4, Key5, Key6, Key7, Key8, Key9]
@@ -704,13 +707,14 @@ proc handleInput(view: View) =
       return
     if view.session.canCommand and view.transport.player.playing and
       view.transport.player.targetTick < 0:
-      if window.buttonPressed[MouseRight]:
+      if window.actionPressed(OrderInput):
         view.controls.clear()
       if clicked or (window.buttonPressed[DoubleClick] and onBoard):
         view.controls.press(view.session.world, x, y,
           window.buttonPressed[DoubleClick], shift)
-      if window.buttonReleased[MouseLeft]:
-        if view.controls.release(view.session.world, x, y) > 0:
+      if window.actionReleased(SelectInput):
+        if view.controls.release(view.session.world, x, y,
+          if view.session.networked: view.front.prepared.submit else: nil) > 0:
           view.launchSource.playSource()
 
 proc capture(view: View) =
@@ -725,7 +729,10 @@ proc capture(view: View) =
 proc layout(view: View) =
   ## Separates board scaling from the shared transport's logical coordinates.
   if view.screen in {GameScreen, TutorialScreen, EndScreen}:
-    view.presentation = presentation(view.window.size.vec2)
+    view.presentation = presentation(
+      view.window.size.vec2,
+      showTransport = view.session.playback
+    )
     view.sk.uiScale = view.presentation.uiScale
     view.offset = vec2(0)
   else:
@@ -741,6 +748,44 @@ proc frame(view: View) =
     elapsed = min(0.25, (now - view.lastTime).inNanoseconds.float64 / 1e9)
     frameStart = epochTime()
   view.lastTime = now
+  if view.musicSource != nil:
+    let volume = if view.front.preferences.soundMuted: 0.0'f
+      else: view.front.preferences.mainVolume.float32 / 100
+    view.musicSource.gain = volume * view.front.preferences.musicVolume.float32 / 100
+    for source in [view.launchSource, view.blastSource, view.captureSource]:
+      source.gain = volume * view.front.preferences.fxVolume.float32 / 100
+  when not defined(emscripten):
+    view.window.updateWindowSettings()
+  try:
+    view.front.pump()
+    if view.front.launch != nil:
+      let next = view.front.launch
+      view.front.launch = nil
+      view.start(provided = next)
+    if view.session != nil and view.session.networked:
+      let match = view.front.prepared
+      if not view.transport.player.playing and
+        view.transport.player.targetTick < 0 and not view.session.inHistory:
+          view.session.world = view.session.liveWorld.clone()
+      var packet: RoomMessage
+      for i in 0 ..< 8:
+        if match == nil or match.finished or
+          not view.front.connection.takeTick(packet, TickRate):
+            break
+        match.applyPacket(packet)
+  except GalconError, RoomsError:
+    view.front.error = getCurrentExceptionMsg()
+    if view.front.prepared != nil:
+      view.front.prepared.abort(view.front.error)
+  if view.screen == FrontScreen:
+    view.front.draw(view.sk, view.window)
+    if view.front.page == HomeMenu:
+      view.screen = MenuScreen
+    inc view.frames
+    if view.options.screenshot.len > 0 and view.frames >= view.options.frames:
+      view.capture()
+    view.window.presentFrame(framePaceHz)
+    return
   view.layout()
   view.handleInput()
   view.layout()
@@ -777,6 +822,7 @@ proc frame(view: View) =
   view.sk.pushClipRect(rect(view.offset, vec2(Width, Height)))
   case view.screen
   of MenuScreen: view.drawMenu()
+  of FrontScreen: discard
   of HelpScreen:
     view.sk.drawRasterImage("Background", view.offset, vec2(Width, Height))
     view.centeredLines("help", HelpText)
@@ -789,11 +835,18 @@ proc frame(view: View) =
       vertex.clipPos = view.presentation.boardOrigin +
         vertex.clipPos * view.presentation.boardScale
       vertex.clipSize *= view.presentation.boardScale
+    view.drawSidebar()
     view.transport.sync(view.session)
     let serial = view.transport.player.seekSerial
-    view.transport.drawTransport(
-      view.sk, view.window, view.presentation.panel
-    )
+    if view.session.networked and view.front.connection != nil:
+      let status = view.front.connection.status()
+      if not view.front.connection.client.connected or view.front.error.len > 0:
+        view.sk.drawLabel(if view.front.error.len > 0: view.front.error else: status,
+          vec2(16, 4), vec2(1100, 34), rgbx(255, 180, 100, 255), "Default")
+    if view.session.playback:
+      view.transport.drawTransport(
+        view.sk, view.window, view.presentation.panel
+      )
     if serial != view.transport.player.seekSerial:
       view.controls.holding = false
   view.sk.endUi()
@@ -801,7 +854,7 @@ proc frame(view: View) =
   inc view.frames
   if view.options.screenshot.len > 0 and view.frames >= view.options.frames:
     view.capture()
-  view.window.swapBuffers()
+  view.window.presentFrame(framePaceHz)
   reportReplayFrame(
     if view.session == nil: 0'i32 else: view.session.world.tick, 0
   )
@@ -824,18 +877,19 @@ proc runGraphics*(options: Options) =
   doAssert builder.addImage("Particle", paints.particle)
   builder.addRasterFont(Assets / "SAVEDBYZ.TTF", "Title", 80,
     @["g", "a", "l", "c", "o", "n", " ", "2", "0", "6"])
-  builder.addRasterFont(Assets / "zeroes_3.ttf", "Menu", 48)
+  builder.addRasterFont(Assets / "zeroes_3.ttf", "Menu", 36)
   builder.addRasterFont(Assets / "zeroes_3.ttf", "Hud", 24)
   builder.addRasterFont(Assets / "zeroes_3.ttf", "Small", 20)
   builder.addRasterFont(Assets / "zeroes_3.ttf", "Hover", 16)
   builder.addRasterFont(Assets / "zeroes_3.ttf", "ScoreTitle", 24)
   builder.addRasterFont(Assets / "zeroes_3.ttf", "Score", 14)
   builder.addRasterFont(Assets / "zeroes_3.ttf", "ScoreSmall", 10)
-  builder.addRasterFont(Assets / "zeroes_3.ttf", "Players", 12)
+  builder.addRasterFont(Assets / "zeroes_3.ttf", "Players", 14)
   builder.addRasterFont(Assets / "zeroes_3.ttf", "Numbers", 14)
   builder.addRasterFont(Assets / "zeroes_3.ttf", "TinyNumbers", 9)
   builder.addRasterFont(Assets / "transport" / "Rubik-Regular.ttf", "Chat", 13)
   builder.addTransportAssets()
+  builder.addMenuAssets()
   let particle = builder.atlas.entries["Particle"]
   for y in 0 ..< paints.particle.height:
     for x in 0 ..< paints.particle.width:
@@ -844,6 +898,7 @@ proc runGraphics*(options: Options) =
       builder.atlasImage[particle.x + x, particle.y + y] =
         rgbx(pixel.r, pixel.g, pixel.b, 0)
   let view = View(
+    front: newFrontend(options),
     window: window,
     sk: newSilky(window, builder.atlasImage, builder.atlas),
     paints: paints,
@@ -854,6 +909,15 @@ proc runGraphics*(options: Options) =
     lastTime: getMonoTime()
   )
   view.sk.builder = builder
+  view.sk.theme = galconTheme()
+  view.front.preferences.applyPreferences(window, options.game.windowWidth == 0)
+  if view.front.page != HomeMenu:
+    view.screen = FrontScreen
+  if view.front.page == MultiplayerMenu and view.front.autoConnect:
+    try:
+      view.front.connect()
+    except RoomsError as error:
+      view.front.error = error.msg
   view.initSounds()
   window.onRune = proc(rune: Rune) =
     ## Appends printable Unicode only while the global chat field is active.
@@ -863,12 +927,18 @@ proc runGraphics*(options: Options) =
         view.chatInput.add value
   if options.start:
     view.start(options.setup.tutorial)
+  window.onButtonPress = proc(button: Button) =
+    ## Applies the shared UI scale shortcuts to menu screens.
+    if view.screen == FrontScreen:
+      discard window.scaleKey(button, view.front.preferences,
+        view.sk.uiScale, AppName)
   window.onFrame = proc() =
     ## Presents one interactive game frame.
     view.frame()
   while not window.closeRequested and not view.closing:
     pollEvents()
-    waitForDisplay()
+
+  view.front.leave()
   if view.session != nil:
     view.session.observer = nil
     view.session.tickObserver = nil

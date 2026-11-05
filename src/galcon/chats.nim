@@ -10,6 +10,7 @@ const
 
 type
   ChatHub* = ref object
+    submit*: proc(sender, target: int, text: string): int32
     world*: World
     inboxes*: array[MaxPlayers + 1, Mailbox]
 
@@ -49,7 +50,7 @@ proc addChat*(world: World, sender: int, text: openArray[char]): bool =
   inc world.chatOrderCount
   true
 
-proc sendChat*(
+proc deliverChat*(
     hub: ChatHub, sender, target: int, text: openArray[char]
 ): int32 =
   ## Broadcasts color-prefixed text on Polyworld's global channel, -2.
@@ -79,3 +80,14 @@ proc chatText*(message: ChatMessage): string =
   result = newString(message.length)
   for i in 0 ..< message.length:
     result[i] = message.text[i]
+
+proc sendChat*(
+    hub: ChatHub, sender, target: int, text: openArray[char]
+): int32 =
+  ## Routes network messages through the relay before changing any inbox.
+  if hub.submit != nil:
+    var value = newString(text.len)
+    for i, character in text:
+      value[i] = character
+    return hub.submit(sender, target, value)
+  hub.deliverChat(sender, target, text)

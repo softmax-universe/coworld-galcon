@@ -88,7 +88,10 @@ proc press*(
       controls.selected[controls.anchor] = true
       controls.added = true
 
-proc release*(controls: var Controls, world: World, x, y: int): int =
+proc release*(
+    controls: var Controls, world: World, x, y: int,
+    submit: SubmitOrder = nil
+): int =
   ## Sends every selected source from any planet anchor to the released target.
   if not controls.holding:
     return 0
@@ -99,7 +102,10 @@ proc release*(controls: var Controls, world: World, x, y: int): int =
     if target >= 0 and target != controls.anchor:
       for i in 0 ..< world.planets.len:
         if controls.selected[i]:
-          result += world.send(controls.player, i, target, controls.percent)
+          if submit != nil:
+            result += submit(controls.player, i, target, controls.percent, true)
+          else:
+            result += world.send(controls.player, i, target, controls.percent)
     elif not controls.moved and target >= 0 and
       world.planets[target].owner == controls.player and not controls.added:
         controls.selected[target] = not controls.selected[target]

@@ -597,4 +597,7 @@ testFairness()
 testRules()
 testBots()
 
+import test_multiplayer
+testMultiplayer()
+
 echo "All Galcon checks passed"

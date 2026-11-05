@@ -10,6 +10,7 @@ type
     game*: GameOptions
     setup*: Setup
     start*, headless*, muted*: bool
+    menu*, server*, name*, join*: string
     screenshot*: string
     frames*: int = 1
     playerCount*: int
@@ -156,6 +157,13 @@ proc parseOptions*(arguments: seq[string]): Options =
       else:
         discard result.game.takeCommonFlag(arguments, index, argument)
       result.start = true
+    of "--menu":
+      result.menu = arguments.argumentValue(index, argument)
+      if result.menu notin ["main", "multiplayer", "battle", "settings"]:
+        fail("--menu must be main, multiplayer, battle, or settings")
+    of "--server": result.server = arguments.argumentValue(index, argument)
+    of "--name": result.name = arguments.argumentValue(index, argument)
+    of "--join": result.join = arguments.argumentValue(index, argument)
     of "--start":
       result.start = true
     of "--headless":
@@ -197,6 +205,7 @@ proc parseOptions*(arguments: seq[string]): Options =
       echo "--play true|false --speed N --windowSize WIDTHxHEIGHT"
       echo "--vsync on|off"
       echo "--screenshot FILE --frames N"
+      echo "--menu main|multiplayer|battle|settings --server URL --name NAME --join ROOM"
       quit(0)
     else:
       if not result.game.takeCommonFlag(arguments, index, argument):
