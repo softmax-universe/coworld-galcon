@@ -4,7 +4,7 @@ import
   common, worlds, profiles, chats
 
 const
-  ReplayVersion* = 12'u16
+  ReplayVersion* = 13'u16
   MaxTicks* = TickRate * 60 * 30
   MaxOrders* = 1_000_000
 
@@ -58,6 +58,9 @@ type
     hashes: seq[uint64]
     chats: seq[ChatMessage]
     names: seq[string]
+  PendingRecordingData = object
+    rules: RulesRecordingData
+    legacyLaunches: bool
   Recording* = ref object
     setup*: Setup
     orders*: seq[Order]
@@ -102,7 +105,8 @@ proc save*(recording: Recording, path: string) =
       chats: recording.chats,
       names: recording.names
     )
-    saveReplayFile(path, "galcon", ReplayVersion, data)
+    saveReplayFile(path, "galcon", ReplayVersion, PendingRecordingData(
+      rules: data, legacyLaunches: recording.setup.legacyLaunches))
   except IOError, OSError, ReplayError:
     raise newException(
       GalconError,
@@ -191,9 +195,16 @@ proc loadRecording*(path: string): Recording =
       result.chats = data.chats
       result.names = data.names
     else:
-      let data = decodeReplayFile(
-        "galcon", ReplayVersion, bytes, RulesRecordingData
-      )
+      var
+        data: RulesRecordingData
+        legacyLaunches = header.gameVersion == 12
+      if header.gameVersion == 12:
+        data = decodeReplayFile("galcon", 12, bytes, RulesRecordingData)
+      else:
+        let current = decodeReplayFile(
+          "galcon", ReplayVersion, bytes, PendingRecordingData)
+        data = current.rules
+        legacyLaunches = current.legacyLaunches
       result.setup = Setup(
         seed: data.setup.seed,
         difficulty: data.setup.difficulty,
@@ -201,6 +212,7 @@ proc loadRecording*(path: string): Recording =
         players: data.setup.players,
         collisions: data.collisions,
         placement: data.placement,
+        legacyLaunches: legacyLaunches,
         enemyShipsPassThrough: data.enemyShipsPassThrough,
         neutralsDontProduce: data.neutralsDontProduce,
         counts: data.setup.counts
@@ -209,6 +221,8 @@ proc loadRecording*(path: string): Recording =
       result.hashes = data.hashes
       result.chats = data.chats
       result.names = data.names
+    if header.gameVersion < 13:
+      result.setup.legacyLaunches = true
     if header.gameVersion < 7:
       result.setup.placement = ClassicPlacement
       result.setup.enemyShipsPassThrough = false
@@ -234,7 +248,8 @@ proc loadRecording*(path: string): Recording =
   for order in result.orders:
     if order.tick < 0 or order.tick < previous or
       order.tick >= result.hashes.len.int32 or
-      order.count <= 0 or order.count > MaxBodies or
+      order.count <= 0 or
+      (result.setup.legacyLaunches and order.count > MaxBodies) or
       order.player < 1 or order.player > result.setup.players.int32 or
       not world.validPlanet(order.source.int) or
       not world.validPlanet(order.target.int) or order.source == order.target:

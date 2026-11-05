@@ -280,8 +280,8 @@ proc validPlanet*(world: World, index: int): bool {.raises: [].} =
   ## Checks one stable planet index at API boundaries.
   index >= 0 and index < world.planets.len
 
-proc launch*(world: World, player, source, target, amount: int): int =
-  ## Launches only ships that fit in clear positions around the source rim.
+proc emitLaunch(world: World, player, source, target, amount: int): int =
+  ## Emits a bounded batch; pending orders already hold their stocks in escrow.
   if player < 1 or player > world.setup.players or
     not world.validPlanet(source) or not world.validPlanet(target) or
     source == target or amount <= 0:
@@ -289,7 +289,7 @@ proc launch*(world: World, player, source, target, amount: int): int =
   if world.planets[source].owner != player:
     return
   let
-    count = min(amount, world.planets[source].shipCount)
+    count = amount
     a = world.planets[source]
     b = world.planets[target]
     radius = a.radius + ShipRadius + 1
@@ -327,11 +327,12 @@ proc launch*(world: World, player, source, target, amount: int): int =
     )
     world.indexSpawn(slot)
     world.ships[slot] = Ship(owner: player, target: target)
-    world.planets[source].ships -= stock(1)
+    if world.setup.legacyLaunches:
+      world.planets[source].ships -= stock(1)
     inc world.planets[target].incoming[player]
     inc world.activeShips
     inc result
-  if result > 0:
+  if result > 0 and world.setup.legacyLaunches:
     world.orders.add Order(
       tick: world.tick,
       player: player.int32,
@@ -339,6 +340,42 @@ proc launch*(world: World, player, source, target, amount: int): int =
       target: target.int32,
       count: result.int32
     )
+
+proc drainLaunches(world: World) =
+  ## Stable FIFO compaction keeps retries bounded and independent of frame rate.
+  var kept = 0
+  for i in 0 ..< world.pendingLaunchCount:
+    var order = world.pendingLaunches[i]
+    if order.count <= 0 or world.planets[order.source].owner != order.player.int:
+      continue # Capture destroys the former owner's unlaunched escrow.
+    order.count -= world.emitLaunch(order.player.int, order.source.int,
+      order.target.int, order.count.int).int32
+    if order.count > 0:
+      world.pendingLaunches[kept] = order
+      inc kept
+  world.pendingLaunchCount = kept
+
+proc launch*(world: World, player, source, target, amount: int): int =
+  ## Accepts a snapshot amount, reserving it once until all ships can depart.
+  if player notin 1 .. world.setup.players or
+    not world.validPlanet(source) or not world.validPlanet(target) or
+    source == target or amount <= 0 or world.planets[source].owner != player:
+      return
+  let count = min(min(amount, int32.high.int), world.planets[source].shipCount)
+  if count <= 0:
+    return
+  if world.setup.legacyLaunches:
+    return world.emitLaunch(player, source, target, count)
+  if world.pendingLaunchCount == MaxPendingLaunches:
+    return
+  let order = Order(tick: world.tick, player: player.int32,
+    source: source.int32, target: target.int32, count: count.int32)
+  world.planets[source].ships -= stock(count)
+  world.pendingLaunches[world.pendingLaunchCount] = order
+  inc world.pendingLaunchCount
+  world.orders.add order
+  world.drainLaunches()
+  count
 
 proc send*(world: World, player, source, target, percent: int): int =
   ## Sends a bounded percentage of one owned planet's current ships.
@@ -406,6 +443,10 @@ proc advance*(world: World, observer: ArrivalObserver = nil) {.measure.} =
         if planet.ships < 0:
           planet.ships = abs(planet.ships)
           planet.owner = ship.owner
+          # Cancel immediately, even if another arrival recaptures this tick.
+          for pending in 0 ..< world.pendingLaunchCount:
+            if world.pendingLaunches[pending].source == ship.target.int32:
+              world.pendingLaunches[pending].count = 0
           inc world.revision
           inc world.captures
         if observer != nil:
@@ -419,6 +460,8 @@ proc advance*(world: World, observer: ArrivalObserver = nil) {.measure.} =
           ))
       body.active = false
       dec world.activeShips
+  if not world.setup.legacyLaunches:
+    world.drainLaunches()
   var
     counts: array[MaxPlayers + 1, int]
     initialPlayers = 0
@@ -519,6 +562,16 @@ proc fingerprint*(world: World): uint64 {.measure.} =
       if body.kind == ShipBody:
         mix(world.ships[i].owner.uint64)
         mix(world.ships[i].target.uint64)
+  if world.pendingLaunchCount > 0:
+    mix(0x4c41554e4348'u64)
+    mix(world.pendingLaunchCount.uint64)
+    for i in 0 ..< world.pendingLaunchCount:
+      let order = world.pendingLaunches[i]
+      mix(order.tick.uint64)
+      mix(order.player.uint64)
+      mix(order.source.uint64)
+      mix(order.target.uint64)
+      mix(order.count.uint64)
   if world.chatCount > 0:
     mix(0x43484154'u64)
     mix(world.chatCount.uint64)

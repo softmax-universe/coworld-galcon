@@ -88,6 +88,12 @@ proc testMultiplayer*() =
   let before = matches[0].stateHash()
   discard matches[0].session.chat.sendChat(1, -2, "hello from Green")
   doAssert matches[0].stateHash() == before, "Submissions must not mutate the world"
+  var humanSource, humanTarget: int
+  for i, planet in matches[0].session.liveWorld.planets:
+    if planet.owner == 1: humanSource = i
+    if planet.owner == 2: humanTarget = i
+  doAssert matches[0].queueOrder(1, humanSource, humanTarget, 50, true) == 50
+  doAssert matches[0].stateHash() == before
   exchange()
   var spectatorAdded, disconnected, reconnected: bool
   for step in 0 ..< 1400:
@@ -126,6 +132,14 @@ proc testMultiplayer*() =
     doAssert match.session.liveWorld.tick == 384
     doAssert match.stateHash() == matches[0].stateHash()
     doAssert match.session.recording.orders.len > 0
+    var humanOrders = 0
+    for order in match.session.recording.orders:
+      if order.player == 1:
+        inc humanOrders
+        doAssert order.count == 50
+    doAssert humanOrders == 1
+    for i in 0 ..< match.session.liveWorld.pendingLaunchCount:
+      doAssert match.session.liveWorld.pendingLaunches[i].player != 1
     doAssert match.session.recording.chats.len > 0
     doAssert match.client.snapshot.phase != Desynced
     doAssert match.session.recording.hashes == matches[0].session.recording.hashes

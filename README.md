@@ -141,6 +141,17 @@ physics and Python/C random generators, so map layouts and match outcomes
 can differ from the Python release. The group-selection controls and default
 ship-count labels carry forward the requested later-Galcon conveniences.
 
+Fleet orders reserve their accepted ship count immediately. If the source rim
+or body pool is crowded, the remaining ships depart automatically as space
+opens; later production is not added to that order. `launch` and `send` return
+accepted ships, not just immediate spawns. Up to 1,024 pending orders are kept
+in deterministic FIFO order; invalid or queue-full requests change nothing.
+Capturing a source destroys its former owner's unlaunched reserved ships.
+Replay/gameplay version 13 records accepted orders once and includes pending
+launches in checkpoints and hashes. Supported older replays (1–6 and 12) retain
+immediate-spawn behavior, including when resaved. Multiplayer uses gameplay
+identity 13 with the unchanged wire protocol 1, so old clients cannot join.
+
 ## Check
 
 ```sh

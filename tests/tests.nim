@@ -296,7 +296,7 @@ block:
     loaded.replayTick(playback, cursor)
   doAssert playback.fingerprint() == a.world.fingerprint()
   echo "Golden deterministic state: ", a.world.fingerprint()
-  doAssert a.world.fingerprint() == 1708288313738586754'u64
+  doAssert a.world.fingerprint() == 9960303572208390231'u64
   writeFile(Root / "build" / "deterministic.hash", $a.world.fingerprint())
   let damaged = loaded.clone()
   damaged.hashes[0] = damaged.hashes[0] xor 1
@@ -330,7 +330,7 @@ when defined(nimTypeNames):
     doAssert session.world.captures > 0
     echo "Allocation-free ticks: ", session.world.tick - 2048
 
-echo "Launches require clear space and retain ships when the rim is full"
+echo "Legacy launches retain immediate-spawn replay semantics"
 block:
   let
     world = duel()
@@ -339,6 +339,7 @@ block:
   for planet in world.planets:
     planet.production = 0
   world.planets[source].ships = stock(10000)
+  world.setup.legacyLaunches = true
   let
     playback = world.clone()
     sent = world.launch(1, source, target, 10000)
@@ -382,6 +383,7 @@ block:
     source = world.ownerPlanet(1)
     target = world.ownerPlanet(2)
     body = world.planets[source].body
+  world.setup.legacyLaunches = true
   world.bodies[body].radius += fixed(ShipRadius * 3)
   let blocked = world.fingerprint()
   doAssert world.launch(1, source, target, 100) == 0
@@ -412,6 +414,7 @@ echo "Full ship pools preserve replay state after partial or blocked launches"
 block:
   let world = duel()
   let source = world.ownerPlanet(1)
+  world.setup.legacyLaunches = true
   world.planets[source].ships = stock(MaxBodies + 100)
   for i in 0 ..< MaxBodies - 2:
     if world.bodies[i].active:
@@ -597,7 +600,8 @@ testFairness()
 testRules()
 testBots()
 
-import test_multiplayer
+import test_multiplayer, test_pending_launches
 testMultiplayer()
+testPendingLaunches()
 
 echo "All Galcon checks passed"

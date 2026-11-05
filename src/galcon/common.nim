@@ -12,6 +12,7 @@ const
   MaxBodies* = 4096
   MaxPlayers* = 16
   MaxPlanets* = 128
+  MaxPendingLaunches* = MaxPlanets * 8
   CompactPlanetThreshold* = 52
   PlanetGap* = 18
   ShipRadius* = 6
@@ -113,6 +114,8 @@ type
     placement*: Placement
     enemyShipsPassThrough*, neutralsDontProduce*: bool = true
     counts*: seq[int]
+    legacyLaunches*: bool
+      ## Old replay orders describe immediate spawns, not accepted intentions.
   World* = ref object
     setup*: Setup
     rng*: Rng
@@ -133,6 +136,9 @@ type
     bodyCursor*, activeShips*: int
     endWait*, winner*, revision*, captures*, impacts*: int
     orders*: seq[Order]
+    pendingLaunches*: array[MaxPendingLaunches, Order]
+    pendingLaunchCount*: int
+      ## FIFO escrow: accepted stocks are deducted once, before rim retries.
     chats*: array[MaxChatLines, ChatMessage]
     chatFirst*, chatCount*: int
     chatOrders*: array[MaxPlayers, ChatMessage]
