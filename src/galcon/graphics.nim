@@ -6,6 +6,9 @@ import
   common, worlds, controls, textures, options, sessions, transports, chats, effects,
   summaries, rasters, frontends, themes, multiplayer
 
+when defined(emscripten) and defined(galconBrowserProbe):
+  {.emit: "#include <emscripten.h>".}
+
 const
   Green = rgbx(85, 255, 85, 255)
   White = rgbx(255, 255, 255, 255)
@@ -619,6 +622,20 @@ proc handleInput(view: View) =
       else: window.buttonPressed[MouseLeft]) and (not game or onBoard)
     entered = window.buttonPressed[KeyEnter]
     shift = window.actionDown(ShiftInput)
+  if view.chatting:
+    if not view.session.canCommand or window.buttonPressed[KeyEscape]:
+      view.chatting = false
+      view.chatInput.setLen(0)
+    elif entered:
+      discard view.session.chat.sendChat(view.session.human, -2, view.chatInput)
+      view.chatting = false
+      view.chatInput.setLen(0)
+    elif window.buttonPressed[KeyBackspace] and view.chatInput.len > 0:
+      var last = view.chatInput.len - 1
+      while last > 0 and (view.chatInput[last].ord and 0xc0) == 0x80:
+        dec last
+      view.chatInput.setLen(last)
+    return
   if entered and (window.buttonDown[KeyLeftAlt] or
     window.buttonDown[KeyRightAlt]):
       window.fullscreen = not window.fullscreen
@@ -634,20 +651,6 @@ proc handleInput(view: View) =
   if window.actionPressed(FullscreenInput):
     window.fullscreen = not window.fullscreen
   if view.screen == FrontScreen:
-    return
-  if view.chatting:
-    if not view.session.canCommand or window.buttonPressed[KeyEscape]:
-      view.chatting = false
-      view.chatInput.setLen(0)
-    elif entered:
-      discard view.session.chat.sendChat(view.session.human, -2, view.chatInput)
-      view.chatting = false
-      view.chatInput.setLen(0)
-    elif window.buttonPressed[KeyBackspace] and view.chatInput.len > 0:
-      var last = view.chatInput.len - 1
-      while last > 0 and (view.chatInput[last].ord and 0xc0) == 0x80:
-        dec last
-      view.chatInput.setLen(last)
     return
   if view.screen == GameScreen and entered and view.session.canCommand:
     view.chatting = true
@@ -785,8 +788,16 @@ proc frame(view: View) =
     if view.options.screenshot.len > 0 and view.frames >= view.options.frames:
       view.capture()
     view.window.presentFrame(framePaceHz)
+    reportReplayFrame(0, 0)
     return
   view.layout()
+  if view.screen == MenuScreen and view.front.nameDialogOpen():
+    view.sk.beginUi(view.window, view.window.size)
+    discard view.front.identityUi(view.sk, view.window)
+    view.sk.endUi()
+    view.window.presentFrame(framePaceHz)
+    reportReplayFrame(0, 0)
+    return
   view.handleInput()
   view.layout()
   if view.screen in {GameScreen, EndScreen}:
@@ -828,6 +839,8 @@ proc frame(view: View) =
     view.centeredLines("help", HelpText)
   else: view.drawGame()
   view.sk.popClipRect()
+  if view.screen == MenuScreen:
+    discard view.front.identityUi(view.sk, view.window)
   if view.screen in {GameScreen, TutorialScreen, EndScreen}:
     for vertex in view.sk.drawer.layers[NormalLayer].mitems:
       vertex.pos = view.presentation.boardOrigin +
@@ -855,9 +868,33 @@ proc frame(view: View) =
   if view.options.screenshot.len > 0 and view.frames >= view.options.frames:
     view.capture()
   view.window.presentFrame(framePaceHz)
+  when defined(emscripten) and defined(galconBrowserProbe):
+    # Test-only, read-only snapshots. No gameplay or room mutation exports.
+    if view.session != nil:
+      let w = view.session.liveWorld
+      var ships: seq[string]
+      for i, b in w.bodies:
+        if b.active and b.kind == ShipBody:
+          ships.add("[" & $i & "," & $w.ships[i].owner & "," &
+            $b.x.toFloat32 & "," & $b.y.toFloat32 & "]")
+      let snapshot = "{\"tick\":" & $w.tick & ",\"human\":" &
+        $view.session.human & ",\"ships\":[" & ships.join(",") & "]}"
+      let raw = snapshot.cstring
+      {.emit: """
+      EM_ASM({ if (new URLSearchParams(location.search).get('qa') === '1' && Module.polyworldGalconProbe) Module.polyworldGalconProbe(JSON.parse(UTF8ToString($0))); }, `raw`);
+      """.}
   reportReplayFrame(
     if view.session == nil: 0'i32 else: view.session.world.tick, 0
   )
+
+proc installChatInput(view: View) =
+  ## Installs the same rune callback for native and browser windows.
+  view.window.onRune = proc(rune: Rune) =
+    if view.chatting and rune.int32 in 32 .. 0x10ffff and
+      rune.int32 notin 127 .. 159 and rune.int32 notin 0xd800 .. 0xdfff:
+      let value = rune.toUTF8()
+      if view.chatInput.len + value.len <= MaxChatBytes - 16:
+        view.chatInput.add value
 
 proc runGraphics*(options: Options) =
   ## Opens a local Silky 2D window with the original assets and BASIC opponents.
@@ -919,12 +956,7 @@ proc runGraphics*(options: Options) =
     except RoomsError as error:
       view.front.error = error.msg
   view.initSounds()
-  window.onRune = proc(rune: Rune) =
-    ## Appends printable Unicode only while the global chat field is active.
-    if view.chatting and rune.int32 >= 32 and rune.int32 != 127:
-      let value = rune.toUTF8()
-      if view.chatInput.len + value.len <= MaxChatBytes - 16:
-        view.chatInput.add value
+  view.installChatInput()
   if options.start:
     view.start(options.setup.tutorial)
   window.onButtonPress = proc(button: Button) =

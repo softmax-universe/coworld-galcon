@@ -29,6 +29,8 @@ type
     started*, finished*: bool
     submit*: SubmitOrder
     decisionTick: int32 = -1
+    playerSeats*: seq[int]
+    seatPlayers*: seq[int]
 
 proc identity*(): GameIdentity =
   ## Uses the same versioned identity envelope as GotA and LvD.
@@ -120,7 +122,7 @@ proc queueOrder*(
   bytes.put32(source.uint32)
   bytes.put32(target.uint32)
   bytes.put32(clamp(value, 0, if percent: 100 else: int32.high.int).uint32)
-  if match.client.submit((player - 1).uint32, bytes):
+  if match.client.submit(match.playerSeats[player - 1].uint32, bytes):
     result =
       if percent: world.planets[source].shipCount * min(value, 100) div 100
       else: min(value, world.planets[source].shipCount)
@@ -134,26 +136,34 @@ proc prepareMatch*(client: RoomClient, sources: seq[string]): NetworkMatch =
     snapshot.seats.len != config.players or sources.len != config.players:
       reject("Galcon identity, tick rate, or roster differs from the room")
   var
-    owned = newSeq[string](config.players)
-    names = newSeq[string](config.players)
+    owned, names: seq[string]
+    playerSeats: seq[int]
+    seatPlayers = newSeq[int](config.players)
+    human = 0
   for i, seat in snapshot.seats:
-    if seat.owner == 0:
-      reject("Fill every slot before readying")
+    if seat.owner == 0: continue
     discard snapshot.humanSeat(seat.owner)
-    names[i] = seat.name
+    playerSeats.add i
+    seatPlayers[i] = playerSeats.len
+    names.add seat.name
+    owned.add ""
     if seat.name == "Human":
+      if seat.owner == client.participant: human = playerSeats.len
       for participant in snapshot.participants:
         if participant.id == seat.owner:
-          names[i] = participant.name
+          names[^1] = participant.name
     elif seat.owner == client.participant:
       if sources[i].len == 0:
         reject("Choose a local policy for every bot you own")
-      owned[i] = loadPolicy(sources[i]).source
-  let session = newSession(config.matchOptions(), owned, names,
-    snapshot.humanSeat(client.participant), true)
+      owned[^1] = loadPolicy(sources[i]).source
+  if playerSeats.len == 0: reject("Assign at least one player before readying")
+  let options = config.matchOptions()
+  options.playerCount = playerSeats.len
+  options.setup = options.matchSetup(config.difficulty)
+  let session = newSession(options, owned, names, human, true)
   session.networked = true
   result = NetworkMatch(client: client, session: session,
-    revision: snapshot.revision)
+    revision: snapshot.revision, playerSeats: playerSeats, seatPlayers: seatPlayers)
   let current {.cursor.} = result
   result.submit = proc(player, source, target, value: int, percent: bool): int =
     ## Routes human and BASIC intent through exactly the same protocol.
@@ -169,7 +179,7 @@ proc prepareMatch*(client: RoomClient, sources: seq[string]): NetworkMatch =
     var bytes: string
     bytes.put32(0)
     bytes.putString(text)
-    if current.client.submit((sender - 1).uint32, bytes):
+    if current.client.submit(current.playerSeats[sender - 1].uint32, bytes):
       return 1
 
 proc decide(match: NetworkMatch) =
@@ -203,13 +213,14 @@ proc applyPacket*(match: NetworkMatch, packet: RoomMessage) =
       reject("Unexpected Galcon simulation tick")
   for command in packet.commands:
     if command.participant == 0 or command.seat >= client.snapshot.seats.len.uint32 or
-      client.snapshot.seats[command.seat].owner != command.participant:
+      client.snapshot.seats[command.seat].owner != command.participant or
+      match.seatPlayers[command.seat] == 0:
         reject("Command participant does not own this player")
     discard decodeSubmission(command.payload)
   for command in packet.commands:
     let
       action = decodeSubmission(command.payload)
-      player = command.seat.int + 1
+      player = match.seatPlayers[command.seat]
     case action.kind
     of 0:
       discard session.chat.deliverChat(player, -2, action.text)

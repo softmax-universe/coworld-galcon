@@ -604,4 +604,14 @@ import test_multiplayer, test_pending_launches
 testMultiplayer()
 testPendingLaunches()
 
+import test_lobby_relay as _
+when not defined(headless):
+  import test_lobby_frontend as _
+  import test_lobby_readiness as _
+  import test_lobby_graphics as _
+  import test_lobby_identity as _
+  import test_lobby_authority as _
+import test_sparse_lobby, test_lobby_presentation as _
+testSparseLobby()
+
 echo "All Galcon checks passed"
