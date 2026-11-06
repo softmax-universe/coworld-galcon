@@ -88,6 +88,19 @@ proc press*(
       controls.selected[controls.anchor] = true
       controls.added = true
 
+proc sendSelected*(controls: var Controls, world: World, target: int,
+    submit: SubmitOrder = nil): int =
+  ## Routes selected owned sources through the same local/authoritative path.
+  controls.clean(world)
+  if not world.validPlanet(target):
+    return
+  for i in 0 ..< world.planets.len:
+    if controls.selected[i] and i != target:
+      if submit != nil:
+        result += submit(controls.player, i, target, controls.percent, true)
+      else:
+        result += world.send(controls.player, i, target, controls.percent)
+
 proc release*(
     controls: var Controls, world: World, x, y: int,
     submit: SubmitOrder = nil
@@ -100,12 +113,7 @@ proc release*(
   let target = controls.hover
   if not controls.box and not controls.double:
     if target >= 0 and target != controls.anchor:
-      for i in 0 ..< world.planets.len:
-        if controls.selected[i]:
-          if submit != nil:
-            result += submit(controls.player, i, target, controls.percent, true)
-          else:
-            result += world.send(controls.player, i, target, controls.percent)
+      result += controls.sendSelected(world, target, submit)
     elif not controls.moved and target >= 0 and
       world.planets[target].owner == controls.player and not controls.added:
         controls.selected[target] = not controls.selected[target]

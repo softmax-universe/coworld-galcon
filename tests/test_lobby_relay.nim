@@ -1,7 +1,7 @@
 import polyworld/[rooms, relays]
 
 proc testLobbyRelay*() =
-  ## Exercises authoritative lobby readiness through real binary messages.
+  ## Legacy Galcon protocol 1 retains its authoritative readiness contract.
   let relay = Relay()
   let game = GameIdentity(game: "galcon", gameplay: 13, protocol: 1)
   proc send(connection: int, message: RoomMessage) =

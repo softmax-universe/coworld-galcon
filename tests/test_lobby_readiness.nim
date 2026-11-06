@@ -47,9 +47,8 @@ guest.connection.client.claimHuman(1)
 exchange()
 for front in fronts:
   let client = front.connection.client
-  front.prepared = prepareMatch(client, newSeq[string](2))
-  client.send(RoomMessage(kind: Ready, revision: client.snapshot.revision,
-    hash: front.prepared.stateHash()))
+  doAssert front.prepared != nil, "Controllers prepare without Ready"
+  client.send(RoomMessage(kind: ReadyStatus, flag: true))
 exchange()
 let initial = host.prepared.stateHash()
 guest.connection.client.send(RoomMessage(kind: LeaveRoom))
@@ -62,7 +61,8 @@ exchange()
 guest.connection.client.claimHuman(1)
 exchange()
 doAssert host.prepared != nil and host.prepared.revision == room.revision
-doAssert not relay.guests[1].ready, "Rejoining human must explicitly ready"
+doAssert not relay.guests[1].ready, "Rejoining human remains socially unready"
+doAssert guest.prepared != nil, "Rejoining human automatically prepares"
 host.resizeRoster(3)
 exchange()
 doAssert host.prepared != nil and host.prepared.revision == room.revision
@@ -77,15 +77,11 @@ exchange()
 host.resizeRoster(2)
 exchange()
 doAssert host.prepared != nil
-let client = guest.connection.client
-guest.prepared = prepareMatch(client, newSeq[string](2))
-client.send(RoomMessage(kind: Ready, revision: client.snapshot.revision,
-  hash: guest.prepared.stateHash()))
-exchange()
+doAssert guest.prepared != nil
 host.connection.client.send(RoomMessage(kind: StartMatch))
 exchange()
 doAssert room.phase == Playing
 doAssert host.prepared.started and guest.prepared.started
 doAssert host.prepared.stateHash() == guest.prepared.stateHash()
 doAssert host.prepared.stateHash() == initial
-echo "Actual relay and frontends preserve ready intent, rebuild revisions and launch with consensus"
+echo "Actual relay and frontends separate social readiness from automatic revision consensus"

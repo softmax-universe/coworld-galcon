@@ -608,10 +608,12 @@ import test_lobby_relay as _
 when not defined(headless):
   import test_lobby_frontend as _
   import test_lobby_readiness as _
+  import test_cosmetic_ready as _
   import test_lobby_graphics as _
   import test_lobby_identity as _
   import test_lobby_authority as _
 import test_sparse_lobby, test_lobby_presentation as _
 testSparseLobby()
+import test_cosmetic_ready_authority as _
 
 echo "All Galcon checks passed"

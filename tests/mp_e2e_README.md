@@ -11,6 +11,17 @@ relay, verifies health, isolates HOME/settings under the evidence directory, run
 with a bounded timeout, and terminates only its own server. No live service is
 used or restarted. Requires Nim dependencies and a native macOS OpenGL session.
 
+Focused order callback regression (no relay):
+```sh
+nim c -r -d:release --nimcache:build/order-input-nimcache --out:build/test_order_input tests/test_order_input.nim
+```
+It verifies right-click sends to hostile/neutral/friendly targets, persistent and
+captured-source selections, repeated sends, empty-space clearing, existing Shift
+and double-click selection, wheel direction/multiple notches/fractional carry,
+10–100% clamps without overscroll debt, and chat/menu/HUD/sidebar/paused/history/
+replay/spectator/finished input isolation. DOM wheel normalization is unit-tested
+for pixel, line and page units; these are native tests, not browser acceptance.
+
 Focused chat callback regression (no relay):
 ```sh
 nim c -r -d:release --nimcache:build/chat-input-nimcache --out:build/test_chat_input tests/test_chat_input.nim
@@ -44,6 +55,9 @@ Assertions cover:
 - Stable-seat-to-packed-player mapping and names preserved in gameplay.
 - Every human clicks an owned planet, drags to a real neutral planet, releases;
   only the real relay can turn queued intent into recorded authoritative orders.
+- Every human then uses the wheel to choose 70% and right-clicks a target;
+  no speculative mutation, retained selection, and exact authoritative accepted
+  counts are checked against the pre-command replay world.
 - Rendered world is live, ticks advance, actual active ship coordinates change.
 - All peers recorded every human order; every common tick fingerprint agrees.
 - Human chat uses Enter/rune callbacks/Enter; every peer receives one authoritative
@@ -56,6 +70,26 @@ Evidence is under `build/mp-e2e/<timestamp>/`: `compile.log`, `client.log`,
 `relay.log`, `result.json`, browser/lobby/launch/movement/final PNGs, replay files,
 and isolated settings. `result.json` records client count, allocated port and
 confirmation that the runner-owned relay exited.
+
+## Same-room completed-match regression
+
+```sh
+python3 tests/mp_e2e_run.py --fixture test_same_room_rematch --timeout 180 --relay /path/to/current-protocol-gameserver
+```
+
+Runs two real production frontend clients through two naturally completed one-minute
+matches in the same private room. Humans occupy stable seats 1 and 3, seat 2 stays
+empty, and seat 0 has a privately sourced bot owned only by the host. Neither
+human clicks Ready. Both rounds exercise actual select/drag/wheel/right-click
+callbacks, authoritative accepted orders and fleet displacement, all 1920 peer
+tick hashes, and each client's saved/reloaded replay. The host returns via Escape
+and the rendered Return to lobby button while the guest is still viewing results;
+both return to the lobby, automatically prepare fresh worlds, and host Start works
+again. Room ID, membership, owner, exact occupied/empty slots, settings, visibility
+and private policy bytes survive. Every synthetic client must acknowledge Leave.
+
+The runner also accepts `--fixture test_cosmetic_ready_ui`; its default remains
+`mp_e2e_native`. Fixture-specific binaries and Nim caches avoid competing writers.
 
 ## Limits / known harness pitfalls
 

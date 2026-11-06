@@ -311,7 +311,7 @@ proc pump*(front: Frontend) =
   front.syncLobby()
 
 proc syncLobby*(front: Frontend) =
-  ## Applies authoritative snapshots and refreshes ready preparation safely.
+  ## Prepares every occupied controller independently of social readiness.
   let client = front.connection.client
   if client.error.len > 0:
     front.error = client.error
@@ -339,6 +339,13 @@ proc syncLobby*(front: Frontend) =
   if not front.online and front.localConfig == nil:
     front.localConfig = parseConfig(front.config.toJson())
   front.online = true
+  # Lobby is the authoritative end of the previous match for every participant,
+  # not just the host who clicked ReturnLobby. Retain seats/config/private policy
+  # bytes, but never reuse a started simulation as the next setup confirmation.
+  if client.snapshot.phase == Lobby and front.prepared != nil and front.prepared.started:
+    front.prepared = nil
+    front.launch = nil
+    front.readyAttempt = 0
   if front.prepared == nil or not front.prepared.started:
     front.page = LobbyMenu
   if front.revision != client.snapshot.revision:
@@ -352,21 +359,18 @@ proc syncLobby*(front: Frontend) =
     if front.pendingConfig == client.snapshot.payload:
       front.pendingConfig = ""
   if client.snapshot.phase == Lobby and front.prepared == nil:
-    var selfReady, ownsSeat: bool
-    var available = true
+    var connected, ownsSeat: bool
     for participant in client.snapshot.participants:
       if participant.id == client.participant:
-        selfReady = participant.ready and participant.connected
+        connected = participant.connected
     for i, seat in client.snapshot.seats:
       if seat.owner == client.participant:
         ownsSeat = true
-        if seat.name != "Human" and front.networkPolicies[i].bytes.len == 0:
-          available = false
-    if selfReady and ownsSeat and available and front.readyAttempt != client.snapshot.revision:
+    if connected and ownsSeat and front.readyAttempt != client.snapshot.revision:
       front.readyAttempt = client.snapshot.revision
       try:
         front.prepared = prepareMatch(client, front.sources())
-        client.send(RoomMessage(kind: Ready, revision: client.snapshot.revision,
+        client.send(RoomMessage(kind: Prepared, revision: client.snapshot.revision,
           hash: front.prepared.stateHash()))
       except GalconError, RoomsError, PolicyError:
         front.error = getCurrentExceptionMsg()
@@ -578,7 +582,6 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     vec2(882, ((front.config.players + 1) div 2).float32 * 74), vec2(1))
   sk.pushClipRect(rect(area.xy, area.wh - vec2(20, 0)))
   var emptyCount, ownCount: int
-  var ready = true
   for i in 0 ..< front.config.players:
     let
       seat = if online and i < snapshot.seats.len: snapshot.seats[i] else: Seat()
@@ -608,7 +611,6 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         if participant.id == seat.owner:
           if human: label = participant.name
           status = if participant.ready: "ready" else: "not ready"
-          ready = ready and participant.ready and participant.connected
     if sk.lobbyButton("", point, 360, height = 64,
       enabled = enabled and visible and hovered and (mine or empty)):
         front.ui.selectedSeat = i
@@ -661,9 +663,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         selfReady = participant.ready
     if sk.lobbyButton("ready", layout.footer + vec2(452, 0), 190,
       enabled = enabled and ownCount > 0):
-        front.prepared = prepareMatch(client, front.sources())
-        client.send(RoomMessage(kind: Ready, revision: snapshot.revision,
-          hash: front.prepared.stateHash()))
+        client.send(RoomMessage(kind: ReadyStatus, flag: not selfReady))
     # Galcon has no shared status-icon atlas; keep GotA's readiness colors
     # directly on the button without changing its label or interaction.
     sk.drawRect(layout.footer + vec2(468, 16), vec2(12),
@@ -671,8 +671,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
       else: sk.theme.disabledTextColor)
   if owner and sk.lobbyButton(if online and snapshot.phase in {Ended, Desynced}:
     "return to lobby" else: "start game", layout.primary, 250,
-    enabled = not modal and owner and (not online or ready or
-      snapshot.phase in {Ended, Desynced}) and front.pendingConfig.len == 0 and
+    enabled = not modal and owner and front.pendingConfig.len == 0 and
       emptyCount < front.config.players, tint = rgbx(143, 255, 162, 255)):
       if online:
         client.send(RoomMessage(kind:

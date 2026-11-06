@@ -6,7 +6,7 @@ import
   common, worlds, controls, textures, options, sessions, transports, chats, effects,
   summaries, rasters, frontends, themes, multiplayer
 
-when defined(emscripten) and defined(galconBrowserProbe):
+when defined(emscripten):
   {.emit: "#include <emscripten.h>".}
 
 const
@@ -21,7 +21,7 @@ const
       "drag to a target, then release.\n\n" &
       "click planets to select a group.\n" &
       "double-click yours to select all.\n\n" &
-      "number keys change attack size.",
+      "number keys or wheel: attack size.",
     "try to take over the red enemy.\n\n" &
       "capture good neutral planets first.\n" &
       "big planets produce more ships.\n\n" &
@@ -37,7 +37,9 @@ const
     "double-click yours to select all.\n" &
     "drag from any planet to a target.\n" &
     "drag empty space to select a box.\n" &
-    "right-click clears the selection.\n\n" &
+    "right-click a target to send ships.\n" &
+    "right-click empty space to clear.\n\n" &
+    "wheel: change ships by 10%\n" &
     "1-9: 10-90%, 0: 100% ships\n" &
     "tab: player ship histories\n" &
     "space or f10: pause\n" &
@@ -81,6 +83,7 @@ type
     chatting: bool
     closing: bool
     chatInput: string
+    wheelRemainder: float32
 
 proc ownerColor(owner: int): ColorRGBX =
   ## Converts the original player palette at the rendering boundary.
@@ -298,9 +301,10 @@ proc drawMenu(view: View) =
   view.text("Hud", "ludum dare #8 - phil hassey", vec2(0, 440), Gray,
     centered = true)
 
-proc drawShips(view: View) =
+proc drawShips(view: View) {.measure.} =
   ## Draws the original hollow triangular ships with fixed simulation headings.
   let world = view.session.world
+  measurePush("ship_geometry")
   for i, body in world.bodies:
     if not body.active or body.kind != ShipBody:
       continue
@@ -325,6 +329,8 @@ proc drawShips(view: View) =
     view.line(a, b, color)
     view.line(b, c, color)
     view.line(c, a, color)
+  measurePop()
+  measurePush("effect_sprites")
   let particle = view.sk.atlas.entries["Particle"]
   for effect in view.effects.particles:
     let frame = effect.frame(world.tick)
@@ -340,6 +346,7 @@ proc drawShips(view: View) =
       position.x.toFloat32 - size.x / 2,
       position.y.toFloat32 - size.y / 2
     ), size, rgbx(alpha, alpha, alpha, alpha))
+  measurePop()
 
 proc drawChat(view: View) =
   ## Fits the newest global messages inside the sidebar, outside the playfield.
@@ -427,7 +434,7 @@ proc cardPanel(
   view.sk.drawTriangle([center, previous, first],
     [sample, sample, sample], [color, color, color])
 
-proc drawSidebar(view: View) =
+proc drawSidebar(view: View) {.measure.} =
   ## Keeps player identities, totals, and chat beside the map at every resolution.
   if view.card.shown or view.screen == TutorialScreen:
     return
@@ -462,7 +469,7 @@ proc drawSidebar(view: View) =
   view.drawChat()
   view.sk.popClipRect()
 
-proc drawCard(view: View) =
+proc drawCard(view: View) {.measure.} =
   ## Draws the approved borderless native-font card on one shared ship scale.
   if not view.card.shown:
     return
@@ -526,6 +533,7 @@ proc drawCard(view: View) =
 proc drawGame(view: View) {.measure.} =
   ## Paints 2D art, translucent effects, transparent counts, and the LD8 HUD.
   view.updateBoard()
+  measurePush("background_and_planet_sprites")
   view.sk.drawRasterImage("Background", view.offset, vec2(Width, Height))
   for i, planet in view.session.world.planets:
     let
@@ -534,6 +542,7 @@ proc drawGame(view: View) {.measure.} =
         ArtScale.float32
       center = view.offset + vec2(planet.x.toFloat32, planet.y.toFloat32)
     view.sk.drawRasterImage(view.planetSprites[i], center - size / 2, size)
+  measurePop()
   view.drawShips()
   let
     world = view.session.world
@@ -604,6 +613,28 @@ proc drawGame(view: View) {.measure.} =
   if view.screen != TutorialScreen:
     view.drawCard()
 
+proc wheelSteps(delta: float64, mode: int): float32 =
+  ## DOM wheel units are pixels, lines, or pages; never use OS-dependent signs.
+  (-delta / (case mode
+    of 1: 3.0
+    of 2: 1.0
+    else: 100.0)).float32
+
+proc installWheelInput(view: View) =
+  when defined(emscripten):
+    # Windy's browser wheel scale/sign varies by OS and ignores deltaMode.
+    # Observe raw DOM units for this game's percentage only; keep Windy's UI
+    # scrolling intact. No command or simulation state is exposed to JS.
+    {.emit: """
+    EM_ASM({
+      Module.galconWheelPixels = 0;
+      Module.canvas.addEventListener('wheel', function(e) {
+        Module.galconWheelPixels += e.deltaY *
+          (e.deltaMode === 1 ? 100 / 3 : e.deltaMode === 2 ? 100 : 1);
+      }, {capture: true, passive: true});
+    });
+    """.}
+
 proc handleInput(view: View) =
   ## Normalizes native input into logical integer Galcon controls.
   let
@@ -618,10 +649,23 @@ proc handleInput(view: View) =
     x = floor(pointer.x).int
     y = floor(pointer.y).int
     onBoard = x in 0 ..< Width and y in 0 ..< Height
+    commandPointer = onBoard and y < 440
+    commands = view.screen == GameScreen and not view.chatting and
+      not view.card.shown and view.session != nil and view.session.canCommand and
+      view.transport.player.playing and view.transport.player.targetTick < 0
     clicked = (if game: window.actionPressed(SelectInput)
       else: window.buttonPressed[MouseLeft]) and (not game or onBoard)
     entered = window.buttonPressed[KeyEnter]
     shift = window.actionDown(ShiftInput)
+  let scroll =
+    when defined(emscripten):
+      var pixels: cdouble
+      {.emit: "`pixels` = EM_ASM_DOUBLE({ var p = Module.galconWheelPixels || 0; Module.galconWheelPixels = 0; return p; });".}
+      wheelSteps(pixels.float64, 0)
+    else:
+      window.scrollDelta.y
+  if not commands or not commandPointer:
+    view.wheelRemainder = 0
   if view.chatting:
     if not view.session.canCommand or window.buttonPressed[KeyEscape]:
       view.chatting = false
@@ -710,8 +754,22 @@ proc handleInput(view: View) =
       return
     if view.session.canCommand and view.transport.player.playing and
       view.transport.player.targetTick < 0:
-      if window.actionPressed(OrderInput):
-        view.controls.clear()
+      if commandPointer:
+        view.wheelRemainder += scroll
+        let steps = view.wheelRemainder.int
+        view.wheelRemainder -= steps.float32
+        let percent = view.controls.percent + steps * 10
+        view.controls.percent = clamp(percent, 10, 100)
+        if percent <= 10 or percent >= 100:
+          view.wheelRemainder = 0
+      if window.actionPressed(OrderInput) and commandPointer:
+        view.controls.holding = false
+        if view.controls.hover >= 0:
+          if view.controls.sendSelected(view.session.world, view.controls.hover,
+            if view.session.networked: view.front.prepared.submit else: nil) > 0:
+              view.launchSource.playSource()
+        else:
+          view.controls.clear()
       if clicked or (window.buttonPressed[DoubleClick] and onBoard):
         view.controls.press(view.session.world, x, y,
           window.buttonPressed[DoubleClick], shift)
@@ -761,6 +819,14 @@ proc frame(view: View) =
     view.window.updateWindowSettings()
   try:
     view.front.pump()
+    if view.session != nil and view.session.networked and
+      view.front.connection != nil and
+      view.front.connection.client.snapshot.room.len > 0 and
+      view.front.connection.client.snapshot.phase == Lobby:
+        # The owner's ReturnLobby also returns peers still viewing the results.
+        # The old session remains available for saving, never for tick playback.
+        view.front.page = LobbyMenu
+        view.screen = FrontScreen
     if view.front.launch != nil:
       let next = view.front.launch
       view.front.launch = nil
@@ -957,6 +1023,7 @@ proc runGraphics*(options: Options) =
       view.front.error = error.msg
   view.initSounds()
   view.installChatInput()
+  view.installWheelInput()
   if options.start:
     view.start(options.setup.tutorial)
   window.onButtonPress = proc(button: Button) =

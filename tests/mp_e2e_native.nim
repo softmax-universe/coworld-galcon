@@ -270,7 +270,33 @@ proc main() =
     check("client " & $i & " authoritative fleet changes position",w.bodies[body].active and (w.bodies[body].x != oldX or w.bodies[body].y != oldY))
     picture(i,"moving")
     echo "FLEET client=",i," stableSeat=",v.front.prepared.playerSeats[v.session.human-1]," source=",source," target=",target," tick=",w.tick," body=",body," from=",oldX,",",oldY," to=",w.bodies[body].x,",",w.bodies[body].y
-  awaitState("all peers recorded all human orders", clients.allIt(it.view.session.recording.orders.len >= ClientCount))
+    # Real wheel state and right-button callback, without advancing authority.
+    point(i,board(w.planets[target]))
+    v.window.state.perFrame.scrollDelta = vec2(0, 0.2'f) # Windy macOS accessor *10.
+    if v.window.onScroll != nil: v.window.onScroll()
+    v.handleInput()
+    check("client " & $i & " wheel immediately selects 70 percent", v.controls.percent == 70)
+    v.window.state.perFrame = PerFrame()
+    let ordersBefore = v.session.recording.orders.len
+    let hashBeforeRight = w.fingerprint()
+    v.window.press(MouseRight)
+    v.handleInput()
+    check("client " & $i & " right-click waits for authority and keeps selection",
+      w.fingerprint() == hashBeforeRight and v.session.recording.orders.len == ordersBefore and v.controls.selected[source])
+    v.window.release(MouseRight)
+    v.window.state.perFrame = PerFrame() # Do not submit the consumed press twice.
+    frames()
+    awaitState("client " & $i & " relay records right-click launch", v.session.recording.orders.len > ordersBefore)
+    let rightOrder = v.session.recording.orders[^1]
+    check("client " & $i & " right-click records selected source and target", rightOrder.player == v.session.human.int32 and rightOrder.source == source.int32 and rightOrder.target == target.int32)
+    let replayWorld = newWorld(v.session.recording.setup)
+    var orderCursor, chatCursor: int
+    while replayWorld.tick < rightOrder.tick:
+      v.session.recording.replayTick(replayWorld, orderCursor, chatCursor)
+    let expectedCount = roundedRatio(replayWorld.planets[source].ships * 70, FixedScale * 100).int32
+    check("client " & $i & " authoritative accepted amount is exactly 70 percent", rightOrder.count == expectedCount and rightOrder.count > 0)
+    echo "RIGHTCLICK client=",i," tick=",rightOrder.tick," percent=70 accepted=",rightOrder.count
+  awaitState("all peers recorded all human orders", clients.allIt(it.view.session.recording.orders.len >= ClientCount*2))
   for i in 0..<ClientCount:
     let v = clients[i].view
     button(i, KeyEnter, true)

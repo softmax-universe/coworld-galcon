@@ -22,15 +22,17 @@ def main():
     parser.add_argument('--relay', required=True, type=Path)
     parser.add_argument('--skip-build', action='store_true')
     parser.add_argument('--clients', type=int, choices=[2,3], default=2)
+    parser.add_argument('--fixture', default='mp_e2e_native', choices=['mp_e2e_native', 'test_cosmetic_ready_ui', 'test_same_room_rematch'])
+    parser.add_argument('--timeout', type=int, default=120)
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     output = root / 'build/mp-e2e' / datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     output.mkdir(parents=True)
-    binary = root / 'build/mp_e2e_native'
+    binary = root / 'build' / args.fixture
     if not args.skip_build:
         with (output / 'compile.log').open('w') as log:
-            result = subprocess.run(['nim', 'c', '-d:release', f'-d:ClientCount={args.clients}', '--nimcache:build/mp-e2e-nimcache',
-                                     '--out:build/mp_e2e_native', 'tests/mp_e2e_native.nim'],
+            result = subprocess.run(['nim', 'c', '-d:release', f'-d:ClientCount={args.clients}', f'--nimcache:build/{args.fixture}-nimcache',
+                                     f'--out:{binary}', f'tests/{args.fixture}.nim'],
                                     cwd=root, stdout=log, stderr=subprocess.STDOUT, timeout=300)
         if result.returncode:
             print((output / 'compile.log').read_text())
@@ -61,7 +63,7 @@ def main():
                 raise RuntimeError('Isolated relay health timed out')
             with (output / 'client.log').open('w') as log:
                 result = subprocess.run([str(binary)], env=env, cwd=root,
-                                        stdout=log, stderr=subprocess.STDOUT, timeout=120)
+                                        stdout=log, stderr=subprocess.STDOUT, timeout=args.timeout)
             print((output / 'client.log').read_text())
         finally:
             relay.terminate()
