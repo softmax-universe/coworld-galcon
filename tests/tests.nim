@@ -212,7 +212,7 @@ block:
       world.planets[i].ships = stock(2)
   for index in owned[0 .. 1]:
     let p = world.planets[index]
-    input.press(world, p.x.toInt.int, p.y.toInt.int)
+    input.press(world, p.x.toInt.int, p.y.toInt.int, additive = true)
     discard input.release(world, p.x.toInt.int, p.y.toInt.int)
   doAssert input.selected[owned[0]] and input.selected[owned[1]]
   let
@@ -600,9 +600,10 @@ testFairness()
 testRules()
 testBots()
 
-import test_multiplayer, test_pending_launches
+import test_multiplayer, test_pending_launches, test_balanced_maps
 testMultiplayer()
 testPendingLaunches()
+testBalancedMaps()
 
 import test_lobby_relay as _
 when not defined(headless):

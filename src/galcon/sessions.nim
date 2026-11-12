@@ -35,10 +35,10 @@ type
       ## A viewer may replay a short lead-in to reconstruct transient art.
 
 proc displayName*(session: Session, owner: int): string =
-  ## Labels a human viewer's faction with its color and recorded bot name.
-  result = playerName(owner)
+  ## Names are opaque; color belongs to the separate faction chip/tint.
   if owner in 1 .. MaxPlayers and session.names[owner].len > 0:
-    result.add " (" & session.names[owner] & ")"
+    return session.names[owner]
+  "Player " & $owner
 
 proc viewerName(name: string, slot: int): string =
   ## Cleans and bounds public labels without exposing them to bot runtimes.

@@ -83,7 +83,7 @@ proc testChats*() =
     ]))
   removeFile(green)
   removeFile(red)
-  doAssert live.displayName(2) == "Red (Andre Bot)"
+  doAssert live.displayName(2) == "Andre Bot"
   doAssert live.recording.names[2] == "Andre Bot"
   for i in 0 ..< 300:
     live.step()
@@ -112,7 +112,7 @@ proc testChats*() =
   doAssert live.world.fingerprint() == hash
   live.finish()
   let playback = newSession(parseOptions(@["--headless", "--replay", path]))
-  doAssert playback.displayName(2) == "Red (Andre Bot)"
+  doAssert playback.displayName(2) == "Andre Bot"
   playback.seek(300)
   doAssert playback.world.fingerprint() == hash
   playback.seek(33)

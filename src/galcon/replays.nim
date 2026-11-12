@@ -4,7 +4,7 @@ import
   common, worlds, profiles, chats
 
 const
-  ReplayVersion* = 13'u16
+  ReplayVersion* = 14'u16
   MaxTicks* = TickRate * 60 * 30
   MaxOrders* = 1_000_000
 
@@ -61,6 +61,9 @@ type
   PendingRecordingData = object
     rules: RulesRecordingData
     legacyLaunches: bool
+  BalancedRecordingData = object
+    pending: PendingRecordingData
+    balancedMap: bool
   Recording* = ref object
     setup*: Setup
     orders*: seq[Order]
@@ -105,8 +108,10 @@ proc save*(recording: Recording, path: string) =
       chats: recording.chats,
       names: recording.names
     )
-    saveReplayFile(path, "galcon", ReplayVersion, PendingRecordingData(
-      rules: data, legacyLaunches: recording.setup.legacyLaunches))
+    saveReplayFile(path, "galcon", ReplayVersion, BalancedRecordingData(
+      pending: PendingRecordingData(rules: data,
+        legacyLaunches: recording.setup.legacyLaunches),
+      balancedMap: recording.setup.balancedMap))
   except IOError, OSError, ReplayError:
     raise newException(
       GalconError,
@@ -198,13 +203,20 @@ proc loadRecording*(path: string): Recording =
       var
         data: RulesRecordingData
         legacyLaunches = header.gameVersion == 12
+        balancedMap = false
       if header.gameVersion == 12:
         data = decodeReplayFile("galcon", 12, bytes, RulesRecordingData)
-      else:
+      elif header.gameVersion == 13:
         let current = decodeReplayFile(
-          "galcon", ReplayVersion, bytes, PendingRecordingData)
+          "galcon", 13, bytes, PendingRecordingData)
         data = current.rules
         legacyLaunches = current.legacyLaunches
+      else:
+        let current = decodeReplayFile(
+          "galcon", ReplayVersion, bytes, BalancedRecordingData)
+        data = current.pending.rules
+        legacyLaunches = current.pending.legacyLaunches
+        balancedMap = current.balancedMap
       result.setup = Setup(
         seed: data.setup.seed,
         difficulty: data.setup.difficulty,
@@ -213,6 +225,7 @@ proc loadRecording*(path: string): Recording =
         collisions: data.collisions,
         placement: data.placement,
         legacyLaunches: legacyLaunches,
+        balancedMap: balancedMap,
         enemyShipsPassThrough: data.enemyShipsPassThrough,
         neutralsDontProduce: data.neutralsDontProduce,
         counts: data.setup.counts

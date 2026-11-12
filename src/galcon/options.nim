@@ -15,6 +15,7 @@ type
     frames*: int = 1
     playerCount*: int
     planetCount*: int = 26
+    balancedMap*: bool
     neutralsPerPlayer*: int
     enemyShipsPassThrough*, neutralsDontProduce*: bool = true
 
@@ -48,6 +49,7 @@ proc matchSetup*(
       else:
         options.planetCount
     )
+    result.balancedMap = options.balancedMap
     if options.neutralsPerPlayer > 0:
       result.placement = ClusteredPlacement
       result.counts[0] = options.playerCount * options.neutralsPerPlayer
@@ -137,11 +139,13 @@ proc parseOptions*(arguments: seq[string]): Options =
       ).int
       if result.neutralsPerPlayer >= MaxPlanets:
         fail("--neutrals-per-player exceeds the planet limit")
-    of "--enemy-ships-pass-through", "--neutrals-dont-produce":
+    of "--balanced-map", "--enemy-ships-pass-through", "--neutrals-dont-produce":
       let text = arguments.argumentValue(index, argument).toLowerAscii()
       if text notin ["true", "false"]:
         fail(argument & " must be true or false")
-      if argument == "--enemy-ships-pass-through":
+      if argument == "--balanced-map":
+        result.balancedMap = text == "true"
+      elif argument == "--enemy-ships-pass-through":
         result.enemyShipsPassThrough = text == "true"
       else:
         result.neutralsDontProduce = text == "true"
@@ -199,6 +203,7 @@ proc parseOptions*(arguments: seq[string]): Options =
       echo "--players N --planets N --player[:SLOT] --bot PATH[:COUNT]"
       echo "--neutrals-per-player N: one home with N nearby neutrals each"
       echo "--seed N --headless --mute"
+      echo "--balanced-map true|false"
       echo "--enemy-ships-pass-through true|false"
       echo "--neutrals-dont-produce true|false"
       echo "--ticks N --seconds N --minutes N --record FILE --replay FILE"

@@ -1,5 +1,5 @@
 import
-  std/[strutils, uri, random],
+  std/[strutils, uri, random, monotimes, times],
   jsony, pixie, silky, chroma, vmath, bumpy,
   polyworld/[menus, lobbies, connections, chrome, policies, inputs, displays],
   common, options, sessions, worlds, bots, multiplayer, themes, rasters
@@ -34,6 +34,8 @@ type
     pendingJoin: bool
     autoConnect*: bool
     browserOpen: bool
+    roomsRefreshArmed: bool
+    roomsRefreshedAt: float64
     localHuman: int
     policies: array[MaxPlayers, LocalPolicy]
     networkPolicies: array[MaxPlayers, LocalPolicy]
@@ -45,6 +47,8 @@ type
     previewKey: string
     settingsTab: int
     captureAction: int = -1
+    slider: int = -1
+    sliderLeft, sliderWidth, sliderScale: float32
     rng: Rand
 
 proc newFrontend*(options: Options): Frontend =
@@ -79,12 +83,16 @@ proc newFrontend*(options: Options): Frontend =
   if result.pendingJoin:
     result.page = MultiplayerMenu
 
+proc confirmedPlayerName(name: string): bool =
+  ## Legacy auto-saved Player is not an identity; never rewrite valid names.
+  name.len <= 64 and validName(name) and name.strip().toLowerAscii() != "player"
+
 proc needsPlayerName*(front: Frontend): bool =
-  front.preferences.name.len > 64 or not validName(front.preferences.name)
+  not confirmedPlayerName(front.preferences.name)
 
 proc savePlayerName*(front: Frontend, name: string) =
   ## Names are opaque; persist only after validation and preserve custom titles.
-  if name.len > 64 or not validName(name): reject("Enter a name without line breaks (1-64 bytes)")
+  if not confirmedPlayerName(name): reject("Enter your name, not Player (1-64 bytes, no line breaks)")
   let defaultName = front.preferences.name & "'s game"
   var updated = front.preferences
   updated.name = name
@@ -117,7 +125,7 @@ proc sources(front: Frontend): seq[string] =
 
 proc connect*(front: Frontend) =
   ## Opens the same native/browser WebSocket transport used by GotA and LvD.
-  if front.preferences.name.strip().len == 0:
+  if front.needsPlayerName() or front.editingPlayer:
     raise newException(GalconError, "Enter a player name in settings")
   front.connection.close()
   front.connection = connect(front.preferences.server,
@@ -290,6 +298,19 @@ proc kickPlayer*(front: Frontend, index: int) =
       reject("Only the host can kick another human participant")
   client.send(RoomMessage(kind: KickParticipant, participant: seat.owner))
 
+proc refreshRooms*(front: Frontend, now: float64, manual = false) =
+  ## Explicit monotonic clock keeps browser polling deterministic and testable.
+  if front.page != MultiplayerMenu or front.connection == nil or
+    not front.connection.client.connected or not front.connection.client.welcomed or
+    front.connection.client.snapshot.room.len > 0:
+    front.roomsRefreshArmed = false
+    return
+  if manual or not front.roomsRefreshArmed or now < front.roomsRefreshedAt or
+    now - front.roomsRefreshedAt >= 1.0 - 1e-9:
+    front.connection.client.send(RoomMessage(kind: ListRooms))
+    front.roomsRefreshedAt = now
+    front.roomsRefreshArmed = true
+
 proc syncLobby*(front: Frontend)
 
 proc pump*(front: Frontend) =
@@ -306,9 +327,11 @@ proc pump*(front: Frontend) =
   else:
     front.browserOpen = false
   if front.connection == nil:
+    front.roomsRefreshArmed = false
     return
   front.connection.pump()
   front.syncLobby()
+  front.refreshRooms(getMonoTime().ticks.float64 / 1_000_000_000)
 
 proc syncLobby*(front: Frontend) =
   ## Prepares every occupied controller independently of social readiness.
@@ -400,10 +423,14 @@ proc localMatch*(front: Frontend): Session =
   options.setup = options.matchSetup(front.config.difficulty)
   newSession(options, policies, names, human, true)
 
+proc settingsScale*(front: Frontend, proposed: float32): float32 =
+  ## Freeze the settings canvas during pointer capture; apply scale on release.
+  if front.slider >= 0: front.sliderScale else: proposed
+
 proc begin(front: Frontend, sk: Silky, window: Window, title: string): LobbyLayout =
   ## Fits the approved Galcon layout without repeating the main-menu logo.
-  sk.uiScale = selectedUiScale(min(window.size.x.float32 / 1514,
-    window.size.y.float32 / 970), 1080.0'f / 970)
+  sk.uiScale = front.settingsScale(selectedUiScale(min(window.size.x.float32 / 1514,
+    window.size.y.float32 / 970), 1080.0'f / 970))
   sk.beginUi(window, window.size)
   sk.textStyle = "LobbyBody"
   let
@@ -411,7 +438,7 @@ proc begin(front: Frontend, sk: Silky, window: Window, title: string): LobbyLayo
     origin = (view - vec2(1514, 970)) / 2
     top = if front.page == MultiplayerMenu: 224.0'f else: 142.0'f
   sk.clearScreen(rgbx(0, 0, 0, 255))
-  sk.drawRasterImage("Background", vec2(0), view)
+  sk.drawRasterCover("Background", vec2(0), view)
   sk.drawLabel(title, origin + vec2(0, 36), vec2(1514, 64),
     MenuGreen, "LobbyTitle", CenterAlign)
   result = LobbyLayout(origin: origin,
@@ -437,7 +464,7 @@ proc browser(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
   let list = layout.left + vec2(24)
   sk.lobbyLabel("public rooms", list, 600, "LobbyHeading", MenuGreen)
   if sk.lobbyButton("refresh", list + vec2(704, 0), 178, enabled = connected):
-    front.connection.client.send(RoomMessage(kind: ListRooms))
+    front.refreshRooms(getMonoTime().ticks.float64 / 1_000_000_000, manual = true)
   sk.lobbyInput(window, "search", front.search, list + vec2(0, 60), 882)
   sk.lobbyLabel("room", list + vec2(0, 116), 390, tint = LobbyMuted)
   sk.lobbyLabel("players", list + vec2(400, 116), 150, tint = LobbyMuted)
@@ -539,6 +566,8 @@ proc configPanel(front: Frontend, sk: Silky, window: Window,
     checkBox "enemy fleets pass through", front.config.enemyShipsPassThrough
     sk.at = content + vec2(0, 526)
     checkBox "neutrals do not grow", front.config.neutralsDontProduce
+    sk.at = content + vec2(0, 570)
+    checkBox "Balanced Map", front.config.balancedMap
   else:
     sk.lobbyLabel("fleets pass through: " & $front.config.enemyShipsPassThrough,
       content + vec2(0, 478), 452)
@@ -616,7 +645,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         front.ui.selectedSeat = i
     sk.drawRect(point + vec2(12, 16), vec2(14, 32),
       if empty: rgbx(95, 98, 103, 255) else: rgbx(color[0], color[1], color[2], 255))
-    sk.lobbyLabel(playerName(i + 1) & "  " & label,
+    sk.lobbyLabel(label,
       point + vec2(38, 0), 368, tint = if empty: LobbyMuted else: rgbx(240, 237, 225, 255))
     sk.lobbyLabel(status, point + vec2(38, 28), 300,
       tint = if online and not empty: readinessColor(status == "ready")
@@ -731,7 +760,36 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         front.policies[index] = policy
       front.ui.selectedSeat = -1
 
-proc settings(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
+proc settingSlider(front: Frontend, sk: Silky, window: Window,
+    id: int, caption: string, value: var int, at: Vec2,
+    minimum, maximum: int, enabled = true) =
+  let track = at + vec2(280, 0)
+  let width = 580.0'f
+  let active = front.slider == id
+  let interaction = sk.interact(rect(track, vec2(width, 44)), enabled)
+  if not enabled and active:
+    front.slider = -1
+  if enabled and interaction == Pressed and front.slider < 0:
+    front.slider = id
+    front.sliderLeft = track.x * sk.uiScale
+    front.sliderWidth = width * sk.uiScale
+    front.sliderScale = sk.uiScale
+  if enabled and front.slider == id:
+    let fraction = clamp((window.mousePos.x.float32 - front.sliderLeft) /
+      front.sliderWidth, 0.0'f, 1.0'f)
+    value = minimum + int(fraction * (maximum - minimum).float32 + 0.5'f)
+    if window.buttonReleased[MouseLeft] or not window.buttonDown[MouseLeft]:
+      front.slider = -1
+  sk.lobbyLabel(caption & "  " & $value & "%", at, 270,
+    tint = if enabled: sk.theme.defaultTextColor else: LobbyMuted)
+  sk.drawRect(track + vec2(0, 18), vec2(width, 8), rgbx(55, 65, 85, 255))
+  let fraction = (value - minimum).float32 / (maximum - minimum).float32
+  sk.drawRect(track + vec2(0, 18), vec2(width * fraction, 8),
+    if enabled: rgbx(100, 185, 240, 255) else: rgbx(90, 95, 105, 255))
+  sk.drawRect(track + vec2(clamp(width * fraction - 6, 0.0'f, width - 12), 7),
+    vec2(12, 30), if enabled: rgbx(230, 238, 255, 255) else: rgbx(110, 115, 125, 255))
+
+proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
   ## Applies shared preferences using Galcon-specific controls and audio.
   let before = front.preferences.toJson()
   sk.lobbyPanel(at - vec2(24), vec2(928, 620))
@@ -740,6 +798,7 @@ proc settings(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
       selected = front.settingsTab == i):
         front.settingsTab = i
         front.captureAction = -1
+        front.slider = -1
   let p = at + vec2(0, 80)
   template selectRow(caption: string, value: untyped, choices: untyped, y: float32) =
     sk.lobbyLabel(caption, p + vec2(0, y), 260)
@@ -756,19 +815,19 @@ proc settings(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
     selectRow("fps limit", front.preferences.fps, [30, 60, 120, 0], 196)
     selectRow("ui scaling", front.preferences.uiScaleMode,
       [AutoUiScale, CustomUiScale], 258)
-    sk.lobbyNumber("scale %", front.preferences.uiScalePercent,
-      p + vec2(0, 320), 860, 25, 200, 10,
+    front.settingSlider(sk, window, 0, "scale", front.preferences.uiScalePercent,
+      p + vec2(0, 320), 25, 200,
       front.preferences.uiScaleMode == CustomUiScale)
     sk.lobbyLabel("0 fps = unlimited", p + vec2(0, 380), 860, tint = LobbyMuted)
   of 1:
     sk.at = p
     checkBox "mute all sound", front.preferences.soundMuted
-    sk.lobbyNumber("main volume", front.preferences.mainVolume,
-      p + vec2(0, 70), 860, 0, 100, 5)
-    sk.lobbyNumber("music volume", front.preferences.musicVolume,
-      p + vec2(0, 140), 860, 0, 100, 5)
-    sk.lobbyNumber("effects volume", front.preferences.fxVolume,
-      p + vec2(0, 210), 860, 0, 100, 5)
+    front.settingSlider(sk, window, 1, "main volume", front.preferences.mainVolume,
+      p + vec2(0, 70), 0, 100)
+    front.settingSlider(sk, window, 2, "music volume", front.preferences.musicVolume,
+      p + vec2(0, 140), 0, 100)
+    front.settingSlider(sk, window, 3, "effects volume", front.preferences.fxVolume,
+      p + vec2(0, 210), 0, 100)
   of 2:
     if front.captureAction >= 0:
       for key in Button:
@@ -814,6 +873,12 @@ proc settings(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
       front.preferences.savePreferences(AppName)
       result = true
 
+proc cancelSettingsCapture*(front: Frontend): bool =
+  ## Escape first cancels rebinding rather than closing its parent overlay.
+  result = front.captureAction >= 0 or front.slider >= 0
+  front.captureAction = -1
+  front.slider = -1
+
 proc nameDialogOpen*(front: Frontend): bool =
   front.editingPlayer or front.needsPlayerName()
 
@@ -828,7 +893,7 @@ proc identityUi*(front: Frontend, sk: Silky, window: Window): bool =
     sk.lobbyLabel(if front.needsPlayerName(): "Please enter your player name"
       else: "Change your player name", at + vec2(24, 20), 572, "LobbyHeading")
     sk.lobbyInput(window, "newPlayerName", front.playerDraft, at + vec2(24, 80), 572)
-    let valid = front.playerDraft.len <= 64 and validName(front.playerDraft)
+    let valid = confirmedPlayerName(front.playerDraft)
     if sk.lobbyButton("Cancel", at + vec2(24, 188), 180) or window.buttonPressed[KeyEscape]:
       front.editingPlayer = false
       front.playerDraft = ""

@@ -1,7 +1,7 @@
-import std/[importutils, times, os]
+import std/[importutils, times, os, unicode, tables]
 import windy/internal
 import opengl, windy, silky, pixie, vmath, jsony
-import galcon/[frontends, themes, multiplayer, common]
+import galcon/[frontends, themes, multiplayer, common, options]
 privateAccess(Frontend)
 privateAccess(Window)
 
@@ -11,6 +11,8 @@ proc handleButtonPress(window: Window, button: Button) =
 proc handleButtonRelease(window: Window, button: Button) =
   ## Completes a real handleButtonRelease rather than calling the action directly.
   handleButtonReleaseTemplate()
+
+proc runeEvent(window: Window, rune: Rune) = handleRuneTemplate()
 
 let window = newWindow("Galcon lobby regression", ivec2(1514, 970), visible = false)
 window.makeContextCurrent()
@@ -168,5 +170,32 @@ let beforeModal = front.config.players
 click(ivec2(140, 690))
 doAssert front.config.players == beforeModal and front.needsPlayerName(),
   "First-run name prompt must block background roster controls"
+front.connection = nil
+front.preferences.name = "  Player  "
+front.page = MultiplayerMenu
+front.playerDraft = ""
+textBoxStates.clear()
+front.pump()
+doAssert front.connection == nil, "Legacy placeholder must not connect before input"
+click(ivec2(560, 450))
+let typedName = "treeform :) 空 白 \"q\": (host)"
+for rune in typedName.runes:
+  window.runeEvent(rune)
+  front.draw(sk, window)
+  window.state.perFrame = PerFrame()
+doAssert front.playerDraft == typedName, "Actual rune input must preserve the literal name"
+front.pump()
+doAssert front.connection == nil, "Typing is not confirmation; no socket/Hello yet"
+click(ivec2(900, 580))
+doAssert not front.needsPlayerName() and front.preferences.name == typedName
+doAssert readPreferences(AppName).name == typedName
+doAssert newFrontend(parseOptions(@[])).preferences.name == typedName,
+  "Confirmed input must survive frontend reconstruction via config storage"
+front.preferences.server = "ws://127.0.0.1:1/ws"
+front.pump()
+doAssert front.connection != nil and front.connection.client.name == typedName,
+  "Only confirmed literal identity may enter the transport"
+front.leave()
+setConfig(AppName, "settings.json", saved)
 window.close()
 echo "Native real Windy right-click -> rendered context menu -> left-click kick passed"

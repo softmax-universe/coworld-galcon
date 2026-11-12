@@ -9,7 +9,7 @@ proc fixture(): World =
     p.ships = stock(100)
 
 proc testPendingLaunches*() =
-  doAssert ReplayVersion == 13, "Persistent launch intentions change gameplay"
+  doAssert ReplayVersion == 14, "Balanced map settings extend persistent-launch replays"
   echo "Accepted 50% launches finish without another command"
   let world = fixture()
   let source = if world.planets[0].owner == 1: 0 else: 1

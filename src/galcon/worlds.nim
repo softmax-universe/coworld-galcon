@@ -146,6 +146,95 @@ proc placePlanets(world: World) =
     world.bodies[planet.body].x = planet.x
     world.bodies[planet.body].y = planet.y
 
+proc arrangeBalanced(world: World, homes: seq[int]) =
+  ## Match production/radii in complete groups of four, not mirrored positions.
+  ## Remainders add one planet in opposite-first quadrant order; populations
+  ## therefore differ by at most one and full groups keep identical sizes.
+  ## Home-sized neutral counterparts stay neutral (including morale).
+  const Quadrants = [0, 3, 1, 2]
+  let
+    compact = world.planets.len > CompactPlanetThreshold or
+      world.setup.placement == ClusteredPlacement
+    largest = if compact: 11 else: 22
+    spacing = largest * 2 + PlanetGap
+    columns = (Width div 2 - 8 - largest * 2) div spacing + 1
+    rows = (Height div 2 - 40 - largest * 2) div spacing + 1
+  var
+    members: array[4, seq[int]]
+    capacities: array[4, int]
+    isHome = newSeq[bool](world.planets.len)
+  for i in 0 ..< world.planets.len:
+    inc capacities[Quadrants[i mod 4]]
+  var shuffled = homes
+  for i in countdown(shuffled.high, 1):
+    let j = world.rng.below((i + 1).int32).int
+    swap(shuffled[i], shuffled[j])
+  for i, index in shuffled:
+    members[Quadrants[i mod 4]].add index
+    isHome[index] = true
+  for index in 0 ..< world.planets.len:
+    if isHome[index]: continue
+    var selected = -1
+    for q in Quadrants:
+      if members[q].len < capacities[q] and
+        (selected < 0 or members[q].len < members[selected].len):
+          selected = q
+    doAssert selected >= 0
+    members[selected].add index
+  var
+    cells: array[4, seq[tuple[x, y: int]]]
+    homeCounts: array[4, int]
+  for q in 0 ..< 4:
+    for index in members[q]:
+      if isHome[index]: inc homeCounts[q]
+    # Keep homes away from quadrant seams: independently choosing the last
+    # perimeter cell can crowd two opposing homes within a single grid step.
+    let
+      homeColumns = (Width div 2 - 40 - 8 - largest) div spacing + 1
+      homeRows = (Height div 2 - 40 - 40 - largest) div spacing + 1
+    var perimeter: seq[tuple[x, y: int]]
+    for x in countdown(homeColumns - 1, 0): perimeter.add (x, 0)
+    for y in 1 ..< homeRows: perimeter.add (0, y)
+    for i in 0 ..< homeCounts[q]:
+      let position =
+        if homeCounts[q] == 1: homeColumns - 1
+        else: i * (perimeter.len - 1) div (homeCounts[q] - 1)
+      cells[q].add perimeter[position]
+    var remaining: seq[tuple[x, y: int]]
+    for y in 0 ..< rows:
+      for x in 0 ..< columns:
+        if (x, y) notin cells[q]: remaining.add (x, y)
+    for i in countdown(remaining.high, 1):
+      let j = world.rng.below((i + 1).int32).int
+      swap(remaining[i], remaining[j])
+    cells[q].add remaining
+    doAssert members[q].len <= cells[q].len
+  let homeGroups = (homes.len + 3) div 4
+  for group in 0 ..< (world.planets.len + 3) div 4:
+    let
+      production = if group < homeGroups: 100 else: world.rng.between(1, 100).int
+      radius = if compact: 6 + production * 5 div 100
+               else: 12 + production * 10 div 100
+      ships = if group < homeGroups: stock(100)
+              else: stock(world.rng.between(10, 29).int)
+    for q in 0 ..< 4:
+      if group >= members[q].len: continue
+      let
+        planet = world.planets[members[q][group]]
+        cell = cells[q][group]
+        x = 8 + largest + cell.x * spacing
+        y = 40 + largest + cell.y * spacing
+      planet.production = production
+      planet.radius = radius
+      planet.ships = ships
+      planet.realShips = ships
+      planet.morale = if isHome[members[q][group]]: 100 else: 50
+      planet.realMorale = planet.morale
+      planet.x = fixed((if (q and 1) == 0: x else: Width - x).int32)
+      planet.y = fixed((if (q and 2) == 0: y else: Height - y).int32)
+      world.bodies[planet.body].x = planet.x
+      world.bodies[planet.body].y = planet.y
+
 proc newWorld*(setup: Setup): World =
   ## Creates and separates the original map with a portable Polyworld seed.
   if setup.players < 1 or setup.players > MaxPlayers or
@@ -192,6 +281,7 @@ proc newWorld*(setup: Setup): World =
     for i in countdown(starts.high, 1):
       let j = result.rng.below((i + 1).int32).int
       swap(starts[i], starts[j])
+  var homes: seq[int]
   for initial in starts:
     let
       owner = initial.owner
@@ -250,10 +340,15 @@ proc newWorld*(setup: Setup): World =
       weight: 100_000,
       target: -1
     )
+    if initial.home: homes.add result.planets.len
     result.planets.add planet
-  if setup.placement == ClusteredPlacement:
+  if setup.balancedMap:
+    result.arrangeBalanced(homes)
+  elif setup.placement == ClusteredPlacement:
     result.arrangeClusters()
-  if setup.placement == RandomPlacement and not classic:
+  if setup.balancedMap:
+    discard # Balanced placement already guarantees disjoint fleet passages.
+  elif setup.placement == RandomPlacement and not classic:
     result.placePlanets()
   else:
     for i in 0 ..< TickRate:
@@ -517,6 +612,8 @@ proc fingerprint*(world: World): uint64 {.measure.} =
     result = (result xor value) * 1099511628211'u64
   template mixFixed(value: Fixed) =
     mix(cast[uint32](int32(value)).uint64)
+  if world.setup.balancedMap:
+    mix(0x42414c414e434544'u64) # Opt-in only: old fingerprints are unchanged.
   mix(world.tick.uint64)
   mix(world.rng.state)
   mix(world.bodyCursor.uint64)

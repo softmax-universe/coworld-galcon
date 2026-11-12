@@ -1,4 +1,4 @@
-import common
+import common, sessions
 
 const CardSeconds* = 10.0
 
@@ -13,6 +13,19 @@ type
   Card* = object
     shown*, terminal*, manual*: bool
     until*: float64
+
+proc resultTitle*(session: Session, interrupted = false): string =
+  ## Timeout/interruption never invent a simulation winner or draw.
+  if session.world.winner > 0:
+    session.displayName(session.world.winner) & " wins"
+  elif session.world.winner == 0:
+    "Draw"
+  elif session.world.tick >= session.maximumTicks:
+    "Time limit reached"
+  elif interrupted:
+    "Match interrupted"
+  else:
+    "Players"
 
 proc newSummary*(maximumTicks: int32): Summary =
   ## Reserves bounded viewer history without adding data to the simulation.
@@ -51,7 +64,7 @@ proc observe*(summary: Summary, world: World) =
   summary.lastTick = world.tick
 
 proc update*(card: var Card, terminal: bool, now: float64) =
-  ## Shows each newly reached ending for ten monotonic wall-clock seconds.
+  ## Final results belong to the match, never to a wall-clock timeout.
   if terminal and not card.terminal:
     card.shown = true
     card.manual = false
@@ -60,15 +73,15 @@ proc update*(card: var Card, terminal: bool, now: float64) =
     card.shown = false
     card.manual = false
     card.until = 0
-  elif terminal and not card.manual and now >= card.until:
-    card.shown = false
   card.terminal = terminal
 
 proc toggle*(card: var Card) =
-  ## Opens or dismisses the score card independently of playback controls.
+  ## Live statistics can toggle; completed results stay until navigation.
+  if card.terminal:
+    return
   card.shown = not card.shown
   card.manual = card.shown
 
 proc holding*(card: Card, now: float64): bool =
-  ## Keeps automatic looping at the ending until the real-time hold expires.
-  card.terminal and now < card.until
+  ## Keep the final frame and results stable until explicit navigation/seek.
+  card.terminal

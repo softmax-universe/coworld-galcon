@@ -41,7 +41,7 @@ const
     [255'u8, 185, 210], [210'u8, 235, 255]
   ]
   Surfaces*: array[MaxPlayers + 1, array[3, uint8]] = [
-    [153'u8, 153, 153], [85'u8, 85, 255], [255'u8, 85, 85],
+    [153'u8, 153, 153], [35'u8, 120, 35], [255'u8, 85, 85],
     [45'u8, 85, 190], [85'u8, 45, 190], [210'u8, 110, 35],
     [130'u8, 45, 100], [35'u8, 120, 100], [70'u8, 70, 180],
     [170'u8, 65, 30], [85'u8, 120, 30], [35'u8, 65, 190],
@@ -114,6 +114,9 @@ type
     placement*: Placement
     enemyShipsPassThrough*, neutralsDontProduce*: bool = true
     counts*: seq[int]
+    balancedMap*: bool
+      ## Explicit generator switch; false preserves historical RNG/positions.
+      ## Fresh lobby MatchConfig enables it; zero/default and old tapes do not.
     legacyLaunches*: bool
       ## Old replay orders describe immediate spawns, not accepted intentions.
   World* = ref object

@@ -82,7 +82,7 @@ proc testSummaries*() =
     doAssert history.samples[1].ships[2] == 0
     doAssert history.samples[1].maximum == 90
 
-  echo "End cards hold looping for ten real seconds at 1x and 16x"
+  echo "Results stay visible indefinitely and cannot be dismissed by Tab"
   for speed in [1'i32, 16]:
     let ending = newSession(parseOptions(@["--headless", "--ticks", "1"]))
     var
@@ -100,17 +100,32 @@ proc testSummaries*() =
         holdAtEnd = card.holding(now))
       doAssert ending.world.tick == 1
       doAssert bar.player.restoreTick == -1
-    card.update(true, 110)
-    doAssert not card.shown and not card.holding(110)
-    discard bar.advancePlayback(ending, 0, epochTime())
-    doAssert bar.player.restoreTick == 0
+    for now in [110.0, 125.0, 86400.0]:
+      card.update(true, now)
+      doAssert card.shown and card.holding(now), "Results must not expire"
+      card.toggle()
+      doAssert card.shown, "Tab cannot dismiss final results"
+      discard bar.advancePlayback(ending, 0, epochTime(), holdAtEnd = card.holding(now))
+      doAssert bar.player.restoreTick == -1
+    card.update(false, 86401)
+    doAssert not card.shown and not card.terminal
     card.toggle()
-    card.update(true, 125)
     doAssert card.shown
     card.toggle()
     doAssert not card.shown
-    card.update(false, 126)
-    card.toggle()
-    doAssert card.shown and not card.terminal
-    card.update(true, 130)
-    doAssert card.shown and card.holding(139.99)
+
+  block:
+    let timed = newSession(parseOptions(@["--headless", "--ticks", "1"]))
+    timed.step()
+    doAssert timed.resultTitle() == "Time limit reached"
+    timed.world.winner = 1
+    timed.names[1] = "Winner :)"
+    doAssert timed.resultTitle() == "Winner :) wins"
+    timed.world.winner = 0
+    doAssert timed.resultTitle() == "Draw"
+    timed.world.winner = -1
+    timed.world.tick = 0
+    doAssert timed.resultTitle(interrupted = true) == "Match interrupted"
+
+when isMainModule:
+  testSummaries()

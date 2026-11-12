@@ -272,19 +272,72 @@ proc main() =
     echo "FLEET client=",i," stableSeat=",v.front.prepared.playerSeats[v.session.human-1]," source=",source," target=",target," tick=",w.tick," body=",body," from=",oldX,",",oldY," to=",w.bodies[body].x,",",w.bodies[body].y
     # Real wheel state and right-button callback, without advancing authority.
     point(i,board(w.planets[target]))
+    let percentHash = w.fingerprint()
+    let percentOrders = v.session.recording.orders.len
+    let percentOutbox = v.front.connection.client.outgoing
+    let percentTick = w.tick
+    v.transport.player.playing = false
+    v.transport.player.targetTick = w.tick + 100
     v.window.state.perFrame.scrollDelta = vec2(0, 0.2'f) # Windy macOS accessor *10.
     if v.window.onScroll != nil: v.window.onScroll()
     v.handleInput()
     check("client " & $i & " wheel immediately selects 70 percent", v.controls.percent == 70)
+    check("client " & $i & " percentage is local despite delayed/paused transport",
+      w.tick == percentTick and w.fingerprint() == percentHash and
+      v.session.recording.orders.len == percentOrders and
+      v.front.connection.client.outgoing == percentOutbox)
+    v.window.state.perFrame = PerFrame()
+    v.window.press(Key3)
+    v.handleInput()
+    check("client " & $i & " number key is immediately local with stalled transport",
+      v.controls.percent == 30 and w.fingerprint() == percentHash and
+      v.front.connection.client.outgoing == percentOutbox)
+    v.window.release(Key3)
+    v.window.state.perFrame = PerFrame()
+    v.window.press(Key7)
+    v.handleInput()
+    v.window.release(Key7)
+    v.transport.player.playing = true
+    v.transport.player.targetTick = -1
     v.window.state.perFrame = PerFrame()
     let ordersBefore = v.session.recording.orders.len
     let hashBeforeRight = w.fingerprint()
+    let commandsBefore = v.front.connection.client.outgoing.len
     v.window.press(MouseRight)
     v.handleInput()
-    check("client " & $i & " right-click waits for authority and keeps selection",
-      w.fingerprint() == hashBeforeRight and v.session.recording.orders.len == ordersBefore and v.controls.selected[source])
+    check("client " & $i & " right down only previews, without queued command",
+      w.fingerprint() == hashBeforeRight and v.session.recording.orders.len == ordersBefore and
+      v.controls.selected[source] and v.controls.holding and
+      v.front.connection.client.outgoing.len == commandsBefore)
+    v.window.state.perFrame = PerFrame()
+    frames()
+    picture(i,"right-held")
+    let heldTick = w.tick
+    awaitState("held preview across authoritative ticks", w.tick >= heldTick + 4)
+    check("client " & $i & " holding never dispatches a command",
+      v.session.recording.orders.len == ordersBefore and v.controls.holding)
+    let releaseHash = w.fingerprint()
+    proc queuedOrders(): int =
+      for bytes in v.front.connection.client.outgoing:
+        if decode(bytes).kind == SubmitCommand: inc result
+    let queuedBeforeRelease = queuedOrders()
     v.window.release(MouseRight)
-    v.window.state.perFrame = PerFrame() # Do not submit the consumed press twice.
+    v.handleInput()
+    check("client " & $i & " release queues once without speculative mutation",
+      w.fingerprint() == releaseHash and v.session.recording.orders.len == ordersBefore and
+      not v.controls.holding and queuedOrders() == queuedBeforeRelease + 1)
+    v.handleInput() # A consumed release cannot dispatch a duplicate intent.
+    check("client " & $i & " duplicate release is idempotent",
+      queuedOrders() == queuedBeforeRelease + 1)
+    v.window.state.perFrame = PerFrame()
+    let submitted = v.front.connection.client.outgoing
+    v.window.press(Key2)
+    v.handleInput()
+    check("client " & $i & " later percentage edit cannot rewrite released intent",
+      v.controls.percent == 20 and v.front.connection.client.outgoing == submitted and
+      w.fingerprint() == releaseHash)
+    v.window.release(Key2)
+    v.window.state.perFrame = PerFrame()
     frames()
     awaitState("client " & $i & " relay records right-click launch", v.session.recording.orders.len > ordersBefore)
     let rightOrder = v.session.recording.orders[^1]
@@ -296,6 +349,10 @@ proc main() =
     let expectedCount = roundedRatio(replayWorld.planets[source].ships * 70, FixedScale * 100).int32
     check("client " & $i & " authoritative accepted amount is exactly 70 percent", rightOrder.count == expectedCount and rightOrder.count > 0)
     echo "RIGHTCLICK client=",i," tick=",rightOrder.tick," percent=70 accepted=",rightOrder.count
+    let afterRightTick = w.tick
+    awaitState("right release settles", w.tick >= afterRightTick + 4)
+    check("client " & $i & " exactly one right-release order accepted",
+      v.session.recording.orders.len == ordersBefore + 1)
   awaitState("all peers recorded all human orders", clients.allIt(it.view.session.recording.orders.len >= ClientCount*2))
   for i in 0..<ClientCount:
     let v = clients[i].view

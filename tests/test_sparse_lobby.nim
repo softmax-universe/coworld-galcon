@@ -46,6 +46,7 @@ proc testSparseLobby*() =
     doAssert match.session.liveWorld.setup.players == 2, "Empty slots must not spawn ghost factions"
     doAssert match.session.brains[1] == nil and match.session.brains[2] == nil
     doAssert match.session.names[1] == names[0] and match.session.names[2] == names[1]
+    doAssert match.session.displayName(1) == names[0] and match.session.displayName(2) == names[1]
     client.send(RoomMessage(kind: Ready, revision: client.snapshot.revision,
       hash: match.stateHash()))
   exchange()

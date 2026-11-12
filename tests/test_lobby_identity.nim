@@ -6,6 +6,27 @@ import galcon/[frontends, options, multiplayer, common, sessions]
 privateAccess(Frontend)
 
 let original = getConfig(AppName, "settings.json")
+block:
+  defer: setConfig(AppName, "settings.json", original)
+  for stored in ["", "{}", "{\"name\":\"\"}", "{\"name\":\"Player\"}",
+      "{\"name\":\"  pLaYeR  \"}"]:
+    setConfig(AppName, "settings.json", stored)
+    for args in [@["--menu", "multiplayer"],
+        @["--menu", "multiplayer", "--server", "ws://127.0.0.1:1/ws"],
+        @["--join", "ABC123"]]:
+      let fresh = newFrontend(parseOptions(args))
+      doAssert fresh.needsPlayerName(), "Missing/legacy Player must require confirmation: " & stored
+      fresh.pump()
+      doAssert fresh.connection == nil, "No socket or Hello before identity confirmation"
+      var blocked = false
+      try: fresh.connect()
+      except GalconError: blocked = true
+      doAssert blocked and fresh.connection == nil, "Direct startup connect must also be gated"
+  let fresh = newFrontend(parseOptions(@[]))
+  fresh.savePlayerName("  treeform :) 空 白 \"q\": (host)  ")
+  let restored = newFrontend(parseOptions(@[]))
+  doAssert restored.preferences.name == "  treeform :) 空 白 \"q\": (host)  "
+  doAssert not restored.needsPlayerName()
 let front = newFrontend(parseOptions(@["--name", "mason :)"]))
 doAssert front.roomName == "mason :)'s game"
 doAssert front.localHuman == 0
@@ -23,6 +44,11 @@ front.policies[3] = LocalPolicy(name: "Truce Bot", bytes: TruceSource)
 let session = front.localMatch()
 doAssert session.world.setup.players == 1
 doAssert session.brains[1] != nil
+doAssert session.displayName(1) == "Truce Bot", "Display names must not include faction color words"
+for literal in ["treeform", "mason :)", "  空 白 🙂 \"q\": (host)  ", "Red (literal)"]:
+  session.names[1] = literal
+  doAssert session.displayName(1) == literal, "Display names must be opaque"
+
 front.connection = Connection(stats: NetworkStats(), client: RoomClient(
   participant: 1, welcomed: true, connected: true, identity: identity()))
 front.connection.client.snapshot = RoomMessage(kind: RoomState, room: "names",

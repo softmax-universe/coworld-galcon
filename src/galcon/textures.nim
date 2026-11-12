@@ -111,22 +111,26 @@ proc planetImage*(paints: Paints, planet: Planet, owner: int): Image =
           alpha =
             if dx * dx + dy * dy < inner * inner: 255
             else: detail.a.int
+        let
+          rim = size - 2 * ArtScale
+          ownerRim = dx * dx + dy * dy >= rim * rim
         result[x, y] = rgbx(
-          (rgb[0].int * alpha div 255).uint8,
-          (rgb[1].int * alpha div 255).uint8,
-          (rgb[2].int * alpha div 255).uint8,
+          ((if ownerRim: base[0].int else: rgb[0].int) * alpha div 255).uint8,
+          ((if ownerRim: base[1].int else: rgb[1].int) * alpha div 255).uint8,
+          ((if ownerRim: base[2].int else: rgb[2].int) * alpha div 255).uint8,
           alpha.uint8
         )
 
 proc haloImage(paints: Paints, planet: Planet, owner: int): Image =
-  ## Tints the original atmospheric glow for additive RGB composition.
-  let tint = Atmospheres[owner]
+  ## Keeps atmospheric hue aligned with the authoritative faction color.
+  let tint = Colors[owner]
   result = newImage(paints.atmosphere.width, paints.atmosphere.height)
   for i, color in paints.atmosphere.data:
+    let intensity = max(color.r.int, max(color.g.int, color.b.int))
     result.data[i] = rgbx(
-      uint8(color.r.int * tint[0].int shr 8),
-      uint8(color.g.int * tint[1].int shr 8),
-      uint8(color.b.int * tint[2].int shr 8),
+      uint8(intensity * tint[0].int div 510),
+      uint8(intensity * tint[1].int div 510),
+      uint8(intensity * tint[2].int div 510),
       255
     )
   let size = (planet.radius * 2 + 1) * ArtScale * result.width div
@@ -154,10 +158,13 @@ proc planetSprite*(
       if x >= offset and y >= offset and
         x < offset + surface.width and y < offset + surface.height:
           pixel = surface[x - offset, y - offset]
+      # The additive atmosphere belongs outside the sphere. Multiplying by
+      # uncovered alpha preserves its exact faction rim and interior lighting.
+      let uncovered = 255 - pixel.a.int
       result[x, y] = rgbx(
-        min(255, pixel.r.int + glow.r.int).uint8,
-        min(255, pixel.g.int + glow.g.int).uint8,
-        min(255, pixel.b.int + glow.b.int).uint8,
+        min(255, pixel.r.int + glow.r.int * uncovered div 255).uint8,
+        min(255, pixel.g.int + glow.g.int * uncovered div 255).uint8,
+        min(255, pixel.b.int + glow.b.int * uncovered div 255).uint8,
         pixel.a
       )
 
@@ -194,8 +201,8 @@ proc boardImage*(paints: Paints, world: World): Image =
       halo = paints.halos[i][owner]
       x = planet.x.toInt.int * ArtScale
       y = planet.y.toInt.int * ArtScale
+    result.addGlow(halo, x - halo.width div 2, y - halo.height div 2)
     result.draw(surface, translate(vec2(
       (x - surface.width div 2).float32,
       (y - surface.height div 2).float32
     )))
-    result.addGlow(halo, x - halo.width div 2, y - halo.height div 2)

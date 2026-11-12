@@ -1,5 +1,5 @@
 import
-  std/[os, unicode],
+  std/[os, unicode, json],
   jsony,
   polyworld/[rooms, roomclients, policies],
   common, worlds, options, sessions, bots, chats, replays
@@ -17,6 +17,7 @@ type
     planets*: int = 69
     maximumTicks*: int32 = TickRate * 600
     difficulty*: Difficulty = Easy
+    balancedMap*: bool = true
     enemyShipsPassThrough*, neutralsDontProduce*: bool = true
   Submission = object
     kind: uint32
@@ -48,7 +49,10 @@ proc parseConfig*(payload: string): MatchConfig =
   ## Parses only the game payload inside the shared room protocol.
   try:
     result = payload.fromJson(MatchConfig)
-  except JsonError as error:
+    # Constructor defaults apply to fresh rooms, not historical payloads.
+    if result != nil and not payload.fromJson().hasKey("balancedMap"):
+      result.balancedMap = false
+  except jsony.JsonError as error:
     raise newException(GalconError, "Invalid Galcon settings: " & error.msg)
   result.validate()
 
@@ -57,7 +61,8 @@ proc matchOptions*(config: MatchConfig): Options =
   config.validate()
   result = Options(playerCount: config.players, planetCount: config.planets,
     enemyShipsPassThrough: config.enemyShipsPassThrough,
-    neutralsDontProduce: config.neutralsDontProduce)
+    neutralsDontProduce: config.neutralsDontProduce,
+    balancedMap: config.balancedMap)
   result.game.seed = config.seed
   result.game.maximumTicks = config.maximumTicks
   result.game.speed = 1

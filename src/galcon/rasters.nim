@@ -54,6 +54,17 @@ proc drawRasterImage*(
     color
   )
 
+proc drawRasterCover*(sk: Silky, name: string, pos, size: Vec2) =
+  ## Uniformly scales the actual atlas image, centering the overflow crop.
+  let
+    entry = sk.atlas.entries[name]
+    source = vec2(entry.width.float32, entry.height.float32)
+    scale = max(size.x / source.x, size.y / source.y)
+    extent = source * scale
+  sk.pushClipRect(rect(pos, size))
+  sk.drawRasterImage(name, pos + (size - extent) / 2, extent)
+  sk.popClipRect()
+
 proc replaceRasterImage*(sk: Silky, name: string, image: Image) =
   ## Replaces one cached sprite, uploading it immediately on native GL.
   let entry = sk.atlas.entries[name]
