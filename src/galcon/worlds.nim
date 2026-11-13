@@ -375,7 +375,7 @@ proc validPlanet*(world: World, index: int): bool {.raises: [].} =
   ## Checks one stable planet index at API boundaries.
   index >= 0 and index < world.planets.len
 
-proc emitLaunch(world: World, player, source, target, amount: int): int =
+proc emitLaunch(world: World, player, source, target, amount: int, opening = -1): int =
   ## Emits a bounded batch; pending orders already hold their stocks in escrow.
   if player < 1 or player > world.setup.players or
     not world.validPlanet(source) or not world.validPlanet(target) or
@@ -392,12 +392,12 @@ proc emitLaunch(world: World, player, source, target, amount: int): int =
     heading = arctan2(b.y - a.y, b.x - a.x)
   if count <= 0:
     return
-  for i in 0 ..< positions:
+  for i in (if opening < 0: 0 else: opening) ..< (if opening < 0: positions else: opening + 1):
     if result == count:
       break
     let
       offset = if i mod 2 == 1: (i + 1) div 2 else: -(i div 2)
-      angle = heading + FixedTau * fixed(offset.int32) /
+      angle = (if opening < 0: heading else: FixedZero) + FixedTau * fixed(offset.int32) /
         fixed(positions.int32)
       x = a.x + cos(angle) * fixed(radius.int32)
       y = a.y + sin(angle) * fixed(radius.int32)
@@ -438,6 +438,44 @@ proc emitLaunch(world: World, player, source, target, amount: int): int =
 
 proc drainLaunches(world: World) =
   ## Stable FIFO compaction keeps retries bounded and independent of frame rate.
+  if not world.setup.legacyMovement:
+    # One ring sweep per source, shared fairly by its queued destinations.
+    # Every successful slot is indexed immediately; no retries enter the tape.
+    var nextOrder: array[MaxPlanets, int]
+    for source in 0 ..< world.planets.len:
+      nextOrder[source] = -1
+    for offset in 0 ..< world.pendingLaunchCount:
+      let i = (offset + world.tick.int mod world.pendingLaunchCount) mod world.pendingLaunchCount
+      let order = addr world.pendingLaunches[i]
+      if order.count <= 0 or world.planets[order.source].owner != order.player.int:
+        order.count = 0
+      elif nextOrder[order.source] < 0:
+        nextOrder[order.source] = i
+    for source in 0 ..< world.planets.len:
+      if nextOrder[source] < 0: continue
+      let radius = world.planets[source].radius + ShipRadius + 1
+      let positions = radius * 6 div (ShipRadius * 2 + 1)
+      for opening in 0 ..< positions:
+        let index = nextOrder[source]
+        if index < 0: break
+        let order = addr world.pendingLaunches[index]
+        let emitted = world.emitLaunch(order.player.int, source, order.target.int, 1, opening)
+        if emitted == 0: continue
+        dec order.count
+        nextOrder[source] = -1
+        for offset in 1 .. world.pendingLaunchCount:
+          let candidate = (index + offset) mod world.pendingLaunchCount
+          if world.pendingLaunches[candidate].source == source.int32 and
+            world.pendingLaunches[candidate].count > 0:
+              nextOrder[source] = candidate
+              break
+    var kept = 0
+    for i in 0 ..< world.pendingLaunchCount:
+      if world.pendingLaunches[i].count > 0:
+        world.pendingLaunches[kept] = world.pendingLaunches[i]
+        inc kept
+    world.pendingLaunchCount = kept
+    return
   var kept = 0
   for i in 0 ..< world.pendingLaunchCount:
     var order = world.pendingLaunches[i]
@@ -469,7 +507,8 @@ proc launch*(world: World, player, source, target, amount: int): int =
   world.pendingLaunches[world.pendingLaunchCount] = order
   inc world.pendingLaunchCount
   world.orders.add order
-  world.drainLaunches()
+  if world.setup.legacyMovement:
+    world.drainLaunches()
   count
 
 proc send*(world: World, player, source, target, percent: int): int =
@@ -614,6 +653,8 @@ proc fingerprint*(world: World): uint64 {.measure.} =
     mix(cast[uint32](int32(value)).uint64)
   if world.setup.balancedMap:
     mix(0x42414c414e434544'u64) # Opt-in only: old fingerprints are unchanged.
+  if not world.setup.legacyMovement:
+    mix(0x464c4f434b3135'u64)
   mix(world.tick.uint64)
   mix(world.rng.state)
   mix(world.bodyCursor.uint64)

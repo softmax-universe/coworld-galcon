@@ -149,6 +149,7 @@ block:
   doAssert world.launch(1, source, source, 100) == 0
   doAssert world.launch(1, source, target, 1) == 1
   doAssert world.planets[source].shipCount == 99
+  world.advance() # Version 15 accepts now and emits once at the tick boundary.
   doAssert world.planets[target].incoming[1] == 1
   var slot = -1
   for i, body in world.bodies:
@@ -262,6 +263,7 @@ echo "Independent BASIC matches and replay reproduce every fixed-state hash"
 block:
   let options = parseOptions(@["--headless", "--seed", "77", "--ticks", "1800"])
   options.setup.collisions = AllPairs
+  options.setup.legacyMovement = true # Preserve the frozen historical golden.
   options.setup.placement = ClassicPlacement
   options.setup.enemyShipsPassThrough = false
   options.setup.neutralsDontProduce = false
@@ -569,6 +571,7 @@ block:
       hashes: seq[uint64]
   let setup = defaultSetup()
   setup.collisions = AllPairs
+  setup.legacyMovement = true
   setup.enemyShipsPassThrough = false
   setup.neutralsDontProduce = false
   let world = newWorld(setup)
@@ -604,6 +607,8 @@ import test_multiplayer, test_pending_launches, test_balanced_maps
 testMultiplayer()
 testPendingLaunches()
 testBalancedMaps()
+import test_flocking
+testFlocking()
 
 import test_lobby_relay as _
 when not defined(headless):

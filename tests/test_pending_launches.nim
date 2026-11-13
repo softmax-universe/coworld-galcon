@@ -9,7 +9,7 @@ proc fixture(): World =
     p.ships = stock(100)
 
 proc testPendingLaunches*() =
-  doAssert ReplayVersion == 14, "Balanced map settings extend persistent-launch replays"
+  doAssert ReplayVersion == 15, "Flocking and tick-batched launches are versioned"
   echo "Accepted 50% launches finish without another command"
   let world = fixture()
   let source = if world.planets[0].owner == 1: 0 else: 1
@@ -168,6 +168,7 @@ proc testPendingLaunches*() =
         names: seq[string]
     let setup = configuredSetup(42, Easy, 2, 2)
     setup.legacyLaunches = true
+    setup.legacyMovement = true
     let w = newWorld(setup)
     let s = if w.planets[0].owner == 1: 0 else: 1
     let sent = w.send(1, s, 1 - s, 50)

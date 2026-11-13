@@ -99,6 +99,7 @@ proc testRules*() =
       source = i
   world.planets[neutral].ships = 0
   doAssert world.launch(1, source, neutral, 1) == 1
+  world.advance() # Tick-batched emission precedes the forced arrival below.
   for i, body in world.bodies:
     if body.active and body.kind == ShipBody:
       world.bodies[i].x = world.planets[neutral].x

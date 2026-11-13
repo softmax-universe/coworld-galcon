@@ -2,7 +2,7 @@ import
   std/[os, math, tables, strutils, monotimes, times, unicode],
   silky, pixie, vmath, chroma, bumpy, opengl, slappy,
   polyworld/profiles as gameProfiles,
-  polyworld/[viewers, inputs, displays, chrome, lobbies],
+  polyworld/[viewers, inputs, displays, chrome, lobbies, networks],
   common, worlds, controls, textures, options, sessions, transports, chats, effects,
   summaries, rasters, frontends, themes, multiplayer
 
@@ -21,7 +21,7 @@ const
       "drag to a target, then release.\n\n" &
       "click planets to select a group.\n" &
       "double-click yours to select all.\n\n" &
-      "number keys or wheel: attack size.",
+      "number keys or slider: attack size.",
     "try to take over the red enemy.\n\n" &
       "capture good neutral planets first.\n" &
       "big planets produce more ships.\n\n" &
@@ -39,10 +39,11 @@ const
     "drag empty space to select a box.\n" &
     "right-click a target to send ships.\n" &
     "right-click empty space to clear.\n\n" &
-    "wheel: change ships by 10%\n" &
+    "slider: choose 1-100% ships\n" &
     "1-9: 10-90%, 0: 100% ships\n" &
     "tab: player ship histories\n" &
     "space or f10: pause\n" &
+    "f1: network/render diagnostics\n" &
     "f2: profile, f3: music\n" &
     "enter: global chat\n" &
     "alt-enter: fullscreen\n" &
@@ -85,9 +86,9 @@ type
     chatting: bool
     closing: bool
     chatInput: string
-    wheelRemainder: float32
     returnPending, returnSent: bool
     matchMenu: MatchMenu
+    diagnosticsOwnInput: bool
 
 proc ownerColor(owner: int): ColorRGBX =
   ## Converts the original player palette at the rendering boundary.
@@ -654,9 +655,9 @@ proc drawGame(view: View) {.measure.} =
       maxWidth = Width.float32 - 16)
   if view.session.human > 0 and not view.session.inHistory:
     let status =
-      "From: " & $selected & " planets   Ships: " & $sending &
+      "From: " & $selected & "   Ships: " & $sending &
         " (" & $view.controls.percent & "%)"
-    view.text("Hud", status, vec2(0, 450), selectionColor, centered = true)
+    view.text("Hover", status, vec2(8, 450), selectionColor, maxWidth = 300)
   case view.screen
   of TutorialScreen:
     view.centeredLines("tutorial #" & $view.tutorial,
@@ -714,30 +715,74 @@ proc drawMatchMenu(view: View) =
     view.sk.lobbyLabel(view.front.error, at + vec2(32, size.y - 38), size.x - 64)
   view.sk.endUi()
 
-proc wheelSteps(delta: float64, mode: int): float32 =
-  ## DOM wheel units are pixels, lines, or pages; never use OS-dependent signs.
-  (-delta / (case mode
-    of 1: 3.0
-    of 2: 1.0
-    else: 100.0)).float32
+proc debugStats(view: View): NetworkStats =
+  ## Pass the live reference: shared simulator widgets edit this connection.
+  if view.session != nil and view.session.networked and
+      view.front.connection != nil:
+    result = view.front.connection.stats
 
-proc installWheelInput(view: View) =
+proc drawDiagnostics(view: View) =
+  ## Separate screen-space pass: never transform shared widgets into board space.
+  if not debugMenuOpen:
+    # Keep shared FPS history warm without committing an empty UI interactor.
+    view.sk.drawDebugMenu(view.window, network = view.debugStats())
+    return
+  let scale = view.sk.uiScale
+  view.sk.uiScale = selectedUiScale(max(0.1'f, min(
+    view.window.size.x.float32 / 1000, view.window.size.y.float32 / 800)),
+    1080.0'f / 800)
+  view.sk.beginUi(view.window, view.window.size)
+  view.sk.textStyle = "Default"
+  view.sk.drawDebugMenu(view.window, network = view.debugStats())
+  if debugMenuOpen and view.debugStats() != nil:
+    let client = view.front.connection.client
+    view.sk.drawLabel("Latest server tick " & $client.serverTick &
+      " | Applied " & $client.applied &
+      " | Backlog " & $max(0'i64, client.serverTick.int64 - client.applied.int64) &
+      " | Displayed " & $view.session.world.tick,
+      vec2(16, 4), vec2(1100, 28), White, "Default")
+  view.sk.endUi()
+  view.sk.uiScale = scale
+
+proc drawSendSlider(view: View) =
+  ## Convert the HUD track once, after board vertices have been transformed.
+  if view.screen != GameScreen: return
+  let enabled = not view.chatting and not view.card.shown and
+    not debugMenuOpen and not view.diagnosticsOwnInput and
+    view.matchMenu == HiddenMatchMenu and
+    view.session != nil and view.session.human > 0 and
+    not view.session.inHistory and not view.session.done
+  let at = view.presentation.boardOrigin + vec2(320, 444) * view.presentation.boardScale
+  view.front.localPercentSlider(view.sk, view.window, 100,
+    view.controls.percent, rect(at, vec2(300, 28) * view.presentation.boardScale), enabled)
+
+proc installPointerCapture(view: View) =
   when defined(emscripten):
-    # Windy's browser wheel scale/sign varies by OS and ignores deltaMode.
-    # Observe raw DOM units for this game's percentage only; keep Windy's UI
-    # scrolling intact. No command or simulation state is exposed to JS.
+    # Game-local pointer capture preserves canvas-origin drags outside it.
+    # Shared Windy input and ordinary UI wheel scrolling remain untouched.
     {.emit: """
     EM_ASM({
-      Module.galconWheelPixels = 0;
-      Module.canvas.addEventListener('wheel', function(e) {
-        Module.galconWheelPixels += e.deltaY *
-          (e.deltaMode === 1 ? 100 / 3 : e.deltaMode === 2 ? 100 : 1);
-      }, {capture: true, passive: true});
+      var canvas = Module.canvas;
+      canvas.addEventListener('pointerdown', function(e) {
+        if (e.pointerType === 'mouse') {
+          try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+        }
+      });
+      window.addEventListener('mouseup', function(e) {
+        if (e.target !== canvas && (e.button === 0 || e.button === 2)) {
+          canvas.dispatchEvent(new MouseEvent('mouseup', {
+            button:e.button, buttons:e.buttons, clientX:e.clientX,
+            clientY:e.clientY, bubbles:true
+          }));
+        }
+      });
     });
     """.}
 
 proc handleInput(view: View) =
   ## Normalizes native input into logical integer Galcon controls.
+  # Keep modal ownership through render-time widgets on the closing frame.
+  view.diagnosticsOwnInput = debugMenuOpen
   let
     window = view.window
     game = view.screen in {GameScreen, TutorialScreen, EndScreen}
@@ -761,16 +806,10 @@ proc handleInput(view: View) =
       else: window.buttonPressed[MouseLeft]) and (not game or onBoard)
     entered = window.buttonPressed[KeyEnter]
     shift = window.actionDown(ShiftInput)
-  let scroll =
-    when defined(emscripten):
-      var pixels: cdouble
-      {.emit: "`pixels` = EM_ASM_DOUBLE({ var p = Module.galconWheelPixels || 0; Module.galconWheelPixels = 0; return p; });".}
-      wheelSteps(pixels.float64, 0)
-    else:
-      window.scrollDelta.y
+
   if game and view.matchMenu != HiddenMatchMenu:
     view.controls.cancelGesture()
-    view.wheelRemainder = 0
+    view.front.cancelLocalPercent(100)
     if window.actionPressed(MenuInput) or window.buttonPressed[KeyEscape]:
       case view.matchMenu
       of GameSettings:
@@ -779,11 +818,8 @@ proc handleInput(view: View) =
       of ConfirmLeave: view.matchMenu = GameMenu
       else: view.matchMenu = HiddenMatchMenu
     return
-  if not percentageInput:
-    view.wheelRemainder = 0
-  if not commands or (not commandPointer and not
-    (view.controls.holding and view.controls.box and not view.controls.ordering)):
-    view.controls.holding = false
+  if not commands:
+    view.controls.cancelGesture()
   if view.chatting:
     if not view.session.canCommand or window.buttonPressed[KeyEscape]:
       view.chatting = false
@@ -797,6 +833,21 @@ proc handleInput(view: View) =
       while last > 0 and (view.chatInput[last].ord and 0xc0) == 0x80:
         dec last
       view.chatInput.setLen(last)
+    return
+  if window.buttonPressed[KeyF1] or window.actionPressed(DebugInput):
+    view.diagnosticsOwnInput = true
+    debugMenuOpen = not debugMenuOpen
+    view.controls.cancelGesture()
+    view.front.cancelLocalPercent(100)
+    return
+  if debugMenuOpen and window.buttonPressed[KeyEscape]:
+    debugMenuOpen = false
+    view.controls.cancelGesture()
+    view.front.cancelLocalPercent(100)
+    return
+  if view.diagnosticsOwnInput:
+    view.controls.cancelGesture()
+    view.front.cancelLocalPercent(100)
     return
   if entered and (window.buttonDown[KeyLeftAlt] or
     window.buttonDown[KeyRightAlt]):
@@ -812,12 +863,16 @@ proc handleInput(view: View) =
       view.musicSource.stop()
   if window.actionPressed(FullscreenInput):
     window.fullscreen = not window.fullscreen
+  if debugMenuOpen:
+    view.controls.cancelGesture()
+    view.front.cancelLocalPercent(100)
+    return
   if view.screen == FrontScreen:
     return
   if view.screen in {GameScreen, TutorialScreen} and window.actionPressed(MenuInput):
     view.matchMenu = GameMenu
     view.controls.cancelGesture()
-    view.wheelRemainder = 0
+    view.front.cancelLocalPercent(100)
     return
   if view.screen == GameScreen and entered and view.session.canCommand:
     view.chatting = true
@@ -866,24 +921,22 @@ proc handleInput(view: View) =
     if window.actionPressed(MenuInput):
       view.returnToMenu()
   of GameScreen:
+    if view.front.localPercentCaptured(100):
+      view.controls.cancelGesture()
+      return
     if percentageInput:
       # This is a local UI preference, never an authoritative command.
       let keys = [Key0, Key1, Key2, Key3, Key4, Key5, Key6, Key7, Key8, Key9]
       for i, key in keys:
         if window.buttonPressed[key]:
           view.controls.percent = if i == 0: 100 else: i * 10
-      view.wheelRemainder += scroll
-      let steps = view.wheelRemainder.int
-      view.wheelRemainder -= steps.float32
-      let percent = view.controls.percent + steps * 10
-      view.controls.percent = clamp(percent, 10, 100)
-      if percent <= 10 or percent >= 100:
-        view.wheelRemainder = 0
     let boxTracking = view.controls.holding and view.controls.box and
       not view.controls.ordering
-    let selectionX = if boxTracking: clamp(x, 0, Width) else: x
-    let selectionY = if boxTracking: clamp(y, 0, Height) else: y
+    let tracking = view.controls.holding
+    let selectionX = if tracking: clamp(x, 0, Width) else: x
+    let selectionY = if tracking: clamp(y, 0, Height) else: y
     view.controls.point(view.session.world, selectionX, selectionY)
+    if not commandPointer: view.controls.hover = -1
     if view.card.shown:
       return
     if view.session.canCommand and view.transport.player.playing and
@@ -893,10 +946,12 @@ proc handleInput(view: View) =
       elif commandPointer and (clicked or window.buttonPressed[DoubleClick]):
         view.controls.press(view.session.world, x, y,
           window.buttonPressed[DoubleClick], shift)
-      if (commandPointer or boxTracking) and ((view.controls.ordering and
+      if ((view.controls.ordering and
         window.actionReleased(OrderInput)) or (not view.controls.ordering and
         window.actionReleased(SelectInput))):
-        if view.controls.release(view.session.world, selectionX, selectionY,
+        if not commandPointer and not boxTracking:
+          view.controls.releaseOutside()
+        elif view.controls.release(view.session.world, selectionX, selectionY,
           if view.session.networked: view.front.prepared.submit else: nil) > 0:
           view.launchSource.playSource()
 
@@ -1017,7 +1072,7 @@ proc frame(view: View) =
   # retain previous-frame hover ownership while it is open; the background
   # must neither consume its IDs nor interact with clicks through the panel.
   let modalInteractions = view.sk.interactor
-  if view.matchMenu != HiddenMatchMenu:
+  if view.matchMenu != HiddenMatchMenu or debugMenuOpen:
     view.sk.interactor = Interactor()
   view.sk.beginUi(view.window, view.window.size)
   view.sk.clearScreen(rgbx(0, 0, 0, 255))
@@ -1042,6 +1097,7 @@ proc frame(view: View) =
         vertex.clipPos * view.presentation.boardScale
       vertex.clipSize *= view.presentation.boardScale
     view.drawSidebar()
+    view.drawSendSlider()
     view.transport.sync(view.session)
     let serial = view.transport.player.seekSerial
     if view.session.networked and view.front.connection != nil:
@@ -1049,16 +1105,19 @@ proc frame(view: View) =
       if not view.front.connection.client.connected or view.front.error.len > 0:
         view.sk.drawLabel(if view.front.error.len > 0: view.front.error else: status,
           vec2(16, 4), vec2(1100, 34), rgbx(255, 180, 100, 255), "Default")
-    if view.session.playback and view.matchMenu == HiddenMatchMenu:
+    if view.session.playback and view.matchMenu == HiddenMatchMenu and
+        not debugMenuOpen and not view.diagnosticsOwnInput:
       view.transport.drawTransport(
         view.sk, view.window, view.presentation.panel
       )
     if serial != view.transport.player.seekSerial:
       view.controls.holding = false
   view.sk.endUi()
-  if view.matchMenu != HiddenMatchMenu:
+  if view.matchMenu != HiddenMatchMenu or debugMenuOpen:
     view.sk.interactor = modalInteractions
   view.drawMatchMenu()
+  if view.matchMenu == HiddenMatchMenu:
+    view.drawDiagnostics()
   view.window.runeInputEnabled = view.chatting or view.matchMenu == GameSettings
   inc view.frames
   if view.options.screenshot.len > 0 and view.frames >= view.options.frames:
@@ -1087,6 +1146,7 @@ proc installChatInput(view: View) =
   ## Installs the same rune callback for native and browser windows.
   view.window.onRune = proc(rune: Rune) =
     if view.chatting and view.matchMenu == HiddenMatchMenu and
+      not debugMenuOpen and not view.diagnosticsOwnInput and
       rune.int32 in 32 .. 0x10ffff and
       rune.int32 notin 127 .. 159 and rune.int32 notin 0xd800 .. 0xdfff:
       let value = rune.toUTF8()
@@ -1151,7 +1211,7 @@ proc runGraphics*(options: Options) =
   # Invite/autoconnect startup must not open a socket before confirmation.
   view.initSounds()
   view.installChatInput()
-  view.installWheelInput()
+  view.installPointerCapture()
   if options.start:
     view.start(options.setup.tutorial)
   window.onButtonPress = proc(button: Button) =

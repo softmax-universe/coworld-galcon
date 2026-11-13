@@ -760,6 +760,38 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         front.policies[index] = policy
       front.ui.selectedSeat = -1
 
+proc localPercentSlider*(front: Frontend, sk: Silky, window: Window,
+    id: int, value: var int, track: Rect, enabled = true) =
+  ## Silky-owned, client-local integer slider with physical-pixel drag capture.
+  let interaction = sk.interact(track, enabled)
+  if not enabled and front.slider == id:
+    front.slider = -1
+  if enabled and interaction == Pressed and front.slider < 0:
+    front.slider = id
+    front.sliderLeft = track.x * sk.uiScale
+    front.sliderWidth = track.w * sk.uiScale
+    front.sliderScale = sk.uiScale
+  if enabled and front.slider == id:
+    let fraction = clamp((window.mousePos.x.float32 - front.sliderLeft) /
+      front.sliderWidth, 0.0'f, 1.0'f)
+    value = 1 + int(fraction * 99 + 0.5'f)
+    if window.buttonReleased[MouseLeft] or not window.buttonDown[MouseLeft]:
+      front.slider = -1
+  let fraction = (value - 1).float32 / 99
+  let middle = track.y + track.h / 2
+  sk.drawRect(vec2(track.x, middle - 3), vec2(track.w, 6), rgbx(55, 65, 85, 255))
+  sk.drawRect(vec2(track.x, middle - 3), vec2(track.w * fraction, 6),
+    if enabled: rgbx(100, 185, 240, 255) else: rgbx(90, 95, 105, 255))
+  sk.drawRect(vec2(track.x + clamp(track.w * fraction - 5, 0.0'f, track.w - 10),
+    middle - 10), vec2(10, 20),
+    if enabled: rgbx(230, 238, 255, 255) else: rgbx(110, 115, 125, 255))
+
+proc localPercentCaptured*(front: Frontend, id: int): bool =
+  front.slider == id
+
+proc cancelLocalPercent*(front: Frontend, id: int) =
+  if front.slider == id: front.slider = -1
+
 proc settingSlider(front: Frontend, sk: Silky, window: Window,
     id: int, caption: string, value: var int, at: Vec2,
     minimum, maximum: int, enabled = true) =

@@ -135,6 +135,7 @@ proc testFairness*() =
       chats: seq[ChatMessage]
       names: seq[string]
   let setup = configuredSetup(8, Easy, 5, 26)
+  setup.legacyMovement = true
   setup.placement = ClassicPlacement
   setup.enemyShipsPassThrough = false
   setup.neutralsDontProduce = false

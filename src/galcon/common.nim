@@ -117,6 +117,8 @@ type
     balancedMap*: bool
       ## Explicit generator switch; false preserves historical RNG/positions.
       ## Fresh lobby MatchConfig enables it; zero/default and old tapes do not.
+    legacyMovement*: bool
+      ## Version 14 and older preserve hard friendly collisions and FIFO retries.
     legacyLaunches*: bool
       ## Old replay orders describe immediate spawns, not accepted intentions.
   World* = ref object
@@ -129,6 +131,8 @@ type
     activeBodies*: array[MaxBodies, uint16]
       ## Scratch indices enumerate active pool slots without tick allocations.
     spatialX*, spatialY*: array[MaxBodies, int32]
+    neighborVX*, neighborVY*, neighborHeading*: array[MaxBodies, Fixed]
+      ## Derived tick scratch, rebuilt from hashed previous/current positions.
     sorted*: array[MaxBodies, SpatialEntry]
     sortedCounts*: array[BodyKind, int]
     gridHeads*: array[MaxGridCells, uint16]

@@ -6,14 +6,6 @@ privateAccess(Window)
 proc handleButtonPress(window: Window, button: Button) = handleButtonPressTemplate()
 proc handleButtonRelease(window: Window, button: Button) = handleButtonReleaseTemplate()
 
-proc testBrowserWheel() =
-  doAssert wheelSteps(-100, 0) == 1, "Browser pixel wheel up is one notch"
-  doAssert wheelSteps(100, 0) == -1
-  doAssert wheelSteps(-3, 1) == 1, "Browser line wheel up is one notch"
-  doAssert wheelSteps(1, 2) == -1
-  doAssert abs(wheelSteps(-20, 0) - 0.2) < 0.0001
-
-testBrowserWheel()
 let window = newWindow("Galcon order input", ivec2(1514, 970), visible = false)
 window.makeContextCurrent()
 loadExtensions()
@@ -163,24 +155,59 @@ proc wheel(delta: float32) =
   if window.onScroll != nil: window.onScroll()
   view.handleInput()
   window.state.perFrame = PerFrame()
-wheel(1)
-doAssert view.controls.percent == 60, "Wheel up raises send amount by ten"
-wheel(-2)
-doAssert view.controls.percent == 40, "Wheel down honors multiple notches"
-wheel(0.4)
-doAssert view.controls.percent == 40, "Fractional scroll must accumulate"
-wheel(0.4)
-doAssert view.controls.percent == 40
-wheel(0.4)
-doAssert view.controls.percent == 50
-wheel(20)
+for delta in [1.0'f, -2.0'f, 0.4'f, 20.0'f, -20.0'f]:
+  wheel(delta)
+  doAssert view.controls.percent == 50, "Wheel must never edit send percentage"
+key(Key3)
+doAssert view.controls.percent == 30
+key(Key0)
 doAssert view.controls.percent == 100
-wheel(-1)
-doAssert view.controls.percent == 90, "Clamping must not retain overscroll debt"
-wheel(-20)
-doAssert view.controls.percent == 10
-wheel(1)
-doAssert view.controls.percent == 20
+key(Key5)
+# The send HUD is an actual Silky widget; drive hover/down/held/outside/release.
+# Keep transport stalled so these frames cannot hide speculative state changes.
+proc sliderFrame() =
+  view.sk.beginUi(window, window.size)
+  view.drawSendSlider()
+  view.sk.endUi()
+proc sliderPoint(fraction: float32, y = 458.0'f) =
+  let p = (view.presentation.boardOrigin + vec2(320 + 300 * fraction, y) *
+    view.presentation.boardScale) * view.sk.uiScale
+  window.state.mousePos = ivec2(p.x.int32, p.y.int32)
+let sliderWorldHash = world.fingerprint()
+let sliderSelection = view.controls.selected
+sliderPoint(0.36'f)
+sliderFrame()
+window.state.doubleClickTime = 0
+window.handleButtonPress(MouseLeft)
+view.handleInput()
+sliderFrame()
+window.state.perFrame = PerFrame()
+doAssert view.controls.percent == 37, "HUD click selects precise integer percent"
+doAssert not view.controls.holding, "Slider must not start a world gesture"
+sliderPoint(0.72'f)
+view.handleInput()
+sliderFrame()
+doAssert view.controls.percent == 72, "Held slider tracks the pointer immediately"
+sliderPoint(-4)
+view.handleInput()
+sliderFrame()
+doAssert view.controls.percent == 1, "Outside drag clamps to one percent"
+sliderPoint(4)
+view.handleInput()
+sliderFrame()
+doAssert view.controls.percent == 100, "Outside drag clamps to 100 percent"
+window.handleButtonRelease(MouseLeft)
+view.handleInput()
+sliderFrame()
+window.state.perFrame = PerFrame()
+doAssert world.fingerprint() == sliderWorldHash and view.controls.selected == sliderSelection,
+  "All slider edits remain local and preserve selected sources"
+sliderPoint(0)
+view.handleInput()
+sliderFrame()
+doAssert view.controls.percent == 100, "Release ends slider capture"
+planet(target)
+key(Key5)
 proc blocked(label: string, beforeInput, afterInput: proc(), localPercent = false) =
   planet(target)
   beforeInput()
@@ -191,7 +218,7 @@ proc blocked(label: string, beforeInput, afterInput: proc(), localPercent = fals
   wheel(1)
   doAssert world.fingerprint() == hash, label & " blocks sends"
   doAssert view.controls.selected == selected, label & " preserves selection"
-  doAssert view.controls.percent == (if localPercent: min(percent + 10, 100) else: percent),
+  doAssert view.controls.percent == percent,
     label & " percentage input ownership"
   afterInput()
 blocked("Chat", proc() = view.chatting = true, proc() = view.chatting = false)
@@ -231,9 +258,40 @@ cancelHeld("Pause", proc() = view.transport.player.playing = false,
 cancelHeld("History", proc() = view.session.world = world.clone(),
   proc() = view.session.world = world)
 cancelHeld("Menu", proc() = view.screen = FrontScreen, proc() = view.screen = GameScreen)
-cancelHeld("Offboard", proc() = point(-10, 200), proc() = discard)
-cancelHeld("HUD", proc() = point(320, 460), proc() = discard)
-# Partial trackpad gestures must not survive crossing a UI ownership boundary.
+# Fleet drags remain armed outside every edge, including beyond the window.
+for button in [MouseLeft, MouseRight]:
+  for edge in [(-2000, 200), (Width + 2000, 200), (320, -2000), (320, Height + 2000), (320, 460)]:
+    for reenter in [false, true]:
+      view.controls.clear()
+      view.controls.selected[source] = true
+      world.planets[source].ships = 100'i64 * FixedScale
+      planet(if button == MouseLeft: source else: target)
+      window.state.doubleClickTime = 0
+      window.handleButtonPress(button)
+      view.handleInput()
+      window.state.perFrame = PerFrame()
+      let hash = world.fingerprint()
+      point(edge[0], edge[1])
+      view.handleInput()
+      doAssert view.controls.holding, "Fleet gesture survives outside pointer"
+      doAssert world.fingerprint() == hash, "Leaving never sends"
+      doAssert view.controls.x in 0 .. Width and view.controls.y in 0 .. Height,
+        "Fleet preview endpoint is clamped"
+      doAssert view.controls.hover == -1, "Outside pointer cannot target a clamped planet"
+      if reenter:
+        planet(target)
+        view.handleInput()
+      window.handleButtonRelease(button)
+      view.handleInput()
+      window.state.perFrame = PerFrame()
+      doAssert not view.controls.holding and not view.controls.ordering,
+        "Any release cleans up the gesture"
+      doAssert (world.fingerprint() != hash) == reenter,
+        "Only valid reentry release sends"
+      let released = world.fingerprint()
+      view.handleInput()
+      doAssert world.fingerprint() == released, "Release sends once"
+# Wheel input remains inert even across a UI ownership boundary.
 planet(target)
 key(Key5)
 wheel(0.6)
@@ -458,6 +516,25 @@ view.summary.observe(world)
 let history = view.summary
 view.session.tickObserver = proc(w: World) = history.observe(w)
 view.front.preferences.name = "Input regression"
+# Complete production frames must retain the HUD widget's hover ownership;
+# closed diagnostics must not commit an empty second Silky pass.
+view.transport.player.playing = false
+view.frame()
+sliderPoint(0.36'f)
+view.frame()
+window.state.doubleClickTime = 0
+window.handleButtonPress(MouseLeft)
+view.frame()
+window.state.perFrame = PerFrame()
+doAssert view.controls.percent == 37, "Send slider works through actual View.frame"
+sliderPoint(-4)
+view.frame()
+doAssert view.controls.percent == 1 and not view.controls.holding,
+  "Production HUD pointer capture stays local outside the board"
+window.handleButtonRelease(MouseLeft)
+view.frame()
+window.state.perFrame = PerFrame()
+view.transport.player.playing = true
 proc overlayClick(row: float32, settings = false) =
   let size = if settings: vec2(976, 700) else: vec2(480, 360)
   view.frame()

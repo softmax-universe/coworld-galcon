@@ -54,7 +54,8 @@ proc addMenuAssets*(builder: AtlasBuilder) =
           image[63, i] = edge
       doAssert builder.addImage(name & ".9patch", image)
   for name in ["check.on", "check.off", "radio.on", "radio.off", "droparrow",
-    "minus", "cross", "chevron_down", "arrow_left", "arrow_right"]:
+    "minus", "cross", "chevron_down", "arrow_left", "arrow_right",
+    "maximized", "close", "resize", "scrubber.handle"]:
       let image = newImage(24, 24)
       for y in 3 .. 20:
         for x in 3 .. 20:
@@ -65,6 +66,10 @@ proc addMenuAssets*(builder: AtlasBuilder) =
               x in [3, 20] or y in [3, 20]
             elif name == "minus": y in 11 .. 13
             elif name == "cross": y in 11 .. 13 or x in 11 .. 13
+            elif name == "close": abs(x - y) <= 1 or abs(x + y - 23) <= 1
+            elif name == "maximized": y in 11 .. 13
+            elif name == "resize": x + y in 29 .. 31 or x + y in 35 .. 37
+            elif name == "scrubber.handle": x in 8 .. 15
             else: abs(x - 12) + abs(y - 10) < 8 and y > 10
           if mark:
             image[x, y] = if name.endsWith("on"): MenuGreen
@@ -72,5 +77,5 @@ proc addMenuAssets*(builder: AtlasBuilder) =
       doAssert builder.addImage(name, image)
   for (name, size) in [("Default", 20), ("H1", 32), ("Bold", 20),
     ("LobbyTitle", 48), ("LobbyHeading", 28), ("LobbyBody", 20),
-    ("LobbyBold", 20)]:
+    ("LobbyBold", 20), ("Mono", 18)]:
       builder.addFont(Assets / "zeroes_3.ttf", name, size.float32)

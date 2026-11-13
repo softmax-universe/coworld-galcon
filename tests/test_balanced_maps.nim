@@ -16,7 +16,7 @@ proc testConfig() =
   doAssert not configuredSetup(8, Easy, 4, 32).balancedMap
   doAssert not parseConfig("{\"players\":4,\"planets\":32}").balancedMap,
     "Legacy room payloads without the flag retain the old generator"
-  doAssert identity().gameplay == 14
+  doAssert identity().gameplay == 15
   doAssert parseOptions(@["--balanced-map", "true"]).setup.balancedMap
   doAssert not parseOptions(@["--balanced-map", "false"]).setup.balancedMap
   for payload in ["{\"players\":4,\"planets\":32,\"balancedMap\":null}",
@@ -121,7 +121,7 @@ proc testReplay() =
       doAssert world.fingerprint() == peer.fingerprint()
     let path = Root / "build/balanced-roundtrip.replay"
     tape.save(path)
-    doAssert readFile(path).replayFileHeader().gameVersion == 14
+    doAssert readFile(path).replayFileHeader().gameVersion == 15
     let loaded = loadRecording(path)
     doAssert loaded.setup.balancedMap == balanced, "Map mode survives replay serialization"
     doAssert loaded.hashes == tape.hashes
@@ -151,6 +151,7 @@ proc testLegacyReplay() =
       rules: Rules
       legacyLaunches: bool
   let setup = configuredSetup(17, Easy, 4, 32)
+  setup.legacyMovement = true
   let world = newWorld(setup)
   let recording = Recording(setup: setup)
   for tick in 0 ..< 32:
@@ -188,6 +189,7 @@ proc testLegacyFingerprints() =
     for p, placement in [RandomPlacement, ClassicPlacement, ClusteredPlacement]:
       let setup = configuredSetup(seed, Easy, 4, 32)
       setup.balancedMap = false
+      setup.legacyMovement = true
       setup.placement = placement
       doAssert newWorld(setup).fingerprint() == Expected[s][p],
         "Unchecked maps preserve historical positions, RNG state and complete hashes"

@@ -4,7 +4,7 @@ import
   common, worlds, profiles, chats
 
 const
-  ReplayVersion* = 14'u16
+  ReplayVersion* = 15'u16
   MaxTicks* = TickRate * 60 * 30
   MaxOrders* = 1_000_000
 
@@ -64,6 +64,9 @@ type
   BalancedRecordingData = object
     pending: PendingRecordingData
     balancedMap: bool
+  FlockingRecordingData = object
+    balanced: BalancedRecordingData
+    legacyMovement: bool
   Recording* = ref object
     setup*: Setup
     orders*: seq[Order]
@@ -108,10 +111,10 @@ proc save*(recording: Recording, path: string) =
       chats: recording.chats,
       names: recording.names
     )
-    saveReplayFile(path, "galcon", ReplayVersion, BalancedRecordingData(
+    saveReplayFile(path, "galcon", ReplayVersion, FlockingRecordingData(balanced: BalancedRecordingData(
       pending: PendingRecordingData(rules: data,
         legacyLaunches: recording.setup.legacyLaunches),
-      balancedMap: recording.setup.balancedMap))
+      balancedMap: recording.setup.balancedMap), legacyMovement: recording.setup.legacyMovement))
   except IOError, OSError, ReplayError:
     raise newException(
       GalconError,
@@ -204,6 +207,7 @@ proc loadRecording*(path: string): Recording =
         data: RulesRecordingData
         legacyLaunches = header.gameVersion == 12
         balancedMap = false
+        legacyMovement = true
       if header.gameVersion == 12:
         data = decodeReplayFile("galcon", 12, bytes, RulesRecordingData)
       elif header.gameVersion == 13:
@@ -211,12 +215,18 @@ proc loadRecording*(path: string): Recording =
           "galcon", 13, bytes, PendingRecordingData)
         data = current.rules
         legacyLaunches = current.legacyLaunches
-      else:
+      elif header.gameVersion == 14:
         let current = decodeReplayFile(
-          "galcon", ReplayVersion, bytes, BalancedRecordingData)
+          "galcon", 14, bytes, BalancedRecordingData)
         data = current.pending.rules
         legacyLaunches = current.pending.legacyLaunches
         balancedMap = current.balancedMap
+      else:
+        let current = decodeReplayFile("galcon", ReplayVersion, bytes, FlockingRecordingData)
+        data = current.balanced.pending.rules
+        legacyLaunches = current.balanced.pending.legacyLaunches
+        balancedMap = current.balanced.balancedMap
+        legacyMovement = current.legacyMovement
       result.setup = Setup(
         seed: data.setup.seed,
         difficulty: data.setup.difficulty,
@@ -226,6 +236,7 @@ proc loadRecording*(path: string): Recording =
         placement: data.placement,
         legacyLaunches: legacyLaunches,
         balancedMap: balancedMap,
+        legacyMovement: legacyMovement,
         enemyShipsPassThrough: data.enemyShipsPassThrough,
         neutralsDontProduce: data.neutralsDontProduce,
         counts: data.setup.counts
@@ -234,6 +245,8 @@ proc loadRecording*(path: string): Recording =
       result.hashes = data.hashes
       result.chats = data.chats
       result.names = data.names
+    if header.gameVersion < 15:
+      result.setup.legacyMovement = true
     if header.gameVersion < 13:
       result.setup.legacyLaunches = true
     if header.gameVersion < 7:

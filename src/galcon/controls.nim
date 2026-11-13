@@ -37,6 +37,10 @@ proc cancelGesture*(controls: var Controls) =
   controls.anchor = -1
   controls.hover = -1
 
+proc releaseOutside*(controls: var Controls) =
+  ## Invalid drop ends a gesture without resolving a clamped preview as a target.
+  controls.cancelGesture()
+
 proc clean*(controls: var Controls, world: World) =
   ## Drops planets captured by another player from the current selection.
   for i in 0 ..< MaxPlanets:
@@ -146,3 +150,4 @@ proc release*(
         controls.selected[target] = true
   controls.holding = false
   controls.box = false
+  controls.ordering = false

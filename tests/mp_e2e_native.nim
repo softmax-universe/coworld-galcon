@@ -270,7 +270,7 @@ proc main() =
     check("client " & $i & " authoritative fleet changes position",w.bodies[body].active and (w.bodies[body].x != oldX or w.bodies[body].y != oldY))
     picture(i,"moving")
     echo "FLEET client=",i," stableSeat=",v.front.prepared.playerSeats[v.session.human-1]," source=",source," target=",target," tick=",w.tick," body=",body," from=",oldX,",",oldY," to=",w.bodies[body].x,",",w.bodies[body].y
-    # Real wheel state and right-button callback, without advancing authority.
+    # Real Silky slider and right-button callback, without advancing authority.
     point(i,board(w.planets[target]))
     let percentHash = w.fingerprint()
     let percentOrders = v.session.recording.orders.len
@@ -281,7 +281,35 @@ proc main() =
     v.window.state.perFrame.scrollDelta = vec2(0, 0.2'f) # Windy macOS accessor *10.
     if v.window.onScroll != nil: v.window.onScroll()
     v.handleInput()
-    check("client " & $i & " wheel immediately selects 70 percent", v.controls.percent == 70)
+    check("client " & $i & " wheel cannot edit percentage", v.controls.percent == 50)
+    v.window.state.perFrame = PerFrame()
+    proc percentPointer(fraction: float32) =
+      let p = (v.presentation.boardOrigin + vec2(320 + 300 * fraction, 458) *
+        v.presentation.boardScale) * v.sk.uiScale
+      v.window.state.mousePos = ivec2(p.x.int32, p.y.int32)
+    proc percentFrame() =
+      v.sk.beginUi(v.window, v.window.size)
+      v.drawSendSlider()
+      v.sk.endUi()
+    percentPointer(0.36'f)
+    percentFrame()
+    v.window.press(MouseLeft)
+    v.handleInput()
+    percentFrame()
+    v.window.state.perFrame = PerFrame()
+    check("client " & $i & " slider click chooses precise 37 percent", v.controls.percent == 37)
+    for (fraction, expected) in [(0.72'f, 72), (-3.0'f, 1), (3.0'f, 100)]:
+      percentPointer(fraction)
+      v.handleInput()
+      percentFrame()
+      check("client " & $i & " held slider local " & $expected,
+        v.controls.percent == expected and not v.controls.holding and
+        w.fingerprint() == percentHash and v.front.connection.client.outgoing == percentOutbox)
+    v.window.release(MouseLeft)
+    v.handleInput()
+    percentFrame()
+    v.window.state.perFrame = PerFrame()
+    point(i,board(w.planets[target]))
     check("client " & $i & " percentage is local despite delayed/paused transport",
       w.tick == percentTick and w.fingerprint() == percentHash and
       v.session.recording.orders.len == percentOrders and
@@ -316,6 +344,15 @@ proc main() =
     awaitState("held preview across authoritative ticks", w.tick >= heldTick + 4)
     check("client " & $i & " holding never dispatches a command",
       v.session.recording.orders.len == ordersBefore and v.controls.holding)
+    point(i, vec2(-2000, -2000))
+    frames()
+    check("client " & $i & " fleet hold survives outside window without orders",
+      v.controls.holding and v.controls.hover == -1 and
+      v.session.recording.orders.len == ordersBefore)
+    point(i, board(w.planets[target]))
+    frames()
+    check("client " & $i & " fleet reentry restores valid target",
+      v.controls.holding and v.controls.hover == target)
     let releaseHash = w.fingerprint()
     proc queuedOrders(): int =
       for bytes in v.front.connection.client.outgoing:
