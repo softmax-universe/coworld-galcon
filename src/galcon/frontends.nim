@@ -1,5 +1,5 @@
 import
-  std/[strutils, uri, random, monotimes, times],
+  std/[os, strutils, uri, random, monotimes, times],
   jsony, pixie, silky, chroma, vmath, bumpy,
   polyworld/[menus, lobbies, connections, chrome, policies, inputs, displays],
   common, options, sessions, worlds, bots, multiplayer, themes, rasters
@@ -12,7 +12,7 @@ const
 
 type
   LobbyBot* = enum
-    ClassicBot, TruceBot
+    ClassicBot, TruceBot, ExpandBot, ChattyBot
   UiCue* = enum
     UiHover, UiClick
   Frontend* = ref object
@@ -60,6 +60,19 @@ type
     slider: int = -1
     sliderLeft, sliderWidth, sliderScale: float32
     rng: Rand
+
+const
+  LobbyBotNames*: array[LobbyBot, string] = [
+    "Classic", "Truce", "Expand", "Chatty"
+  ]
+  LobbyBotPolicies*: array[LobbyBot, LocalPolicy] = [
+    LocalPolicy(name: "Classic Bot", bytes: BaselineSource),
+    LocalPolicy(name: "Truce Bot", bytes: TruceSource),
+    LocalPolicy(name: "Expand Bot",
+      bytes: staticRead(Root / "players/expand.bas")),
+    LocalPolicy(name: "Chatty Bot",
+      bytes: staticRead(Root / "players/chatty.bas"))
+  ]
 
 proc emitUiCue*(front: Frontend, cue: UiCue) =
   ## Sends optional interface feedback without touching match state.
@@ -355,10 +368,7 @@ proc activateContext*(front: Frontend) =
 proc fillBots*(front: Frontend, bot = TruceBot) =
   ## Fills only open seats with the chosen bundled policy.
   if not front.administer() or front.synchronizing(): reject("Only host can fill bots")
-  let policy =
-    case bot
-    of ClassicBot: LocalPolicy(name: "Classic Bot", bytes: BaselineSource)
-    of TruceBot: LocalPolicy(name: "Truce Bot", bytes: TruceSource)
+  let policy = LobbyBotPolicies[bot]
   for i in 0 ..< front.config.players:
     if front.online:
       let client = front.connection.client
@@ -860,18 +870,16 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
       window.buttonPressed[KeyEscape]:
         front.contextSeat = -1
   if front.ui.selectedSeat >= 0:
-    let choice = sk.seatPicker(window, front.ui, @[
-      LocalPolicy(name: "Truce Bot", bytes: TruceSource),
-      LocalPolicy(name: "Classic Bot", bytes: BaselineSource)
-    ])
+    if front.ui.selectedSeatBot.len == 0:
+      front.ui.selectedSeatBot = LobbyBotPolicies[TruceBot].name
+    let choice = sk.seatPicker(window, front.ui, LobbyBotPolicies)
     if choice.chosen:
       front.emitUiCue(UiClick)
       let index = front.ui.selectedSeat
       var policy: LocalPolicy
       if not choice.clear and not choice.human:
         policy = if choice.file: selectPolicy()
-          elif choice.bot == 0: LocalPolicy(name: "Truce Bot", bytes: TruceSource)
-          else: LocalPolicy(name: "Classic Bot", bytes: BaselineSource)
+          else: LobbyBotPolicies[LobbyBot(choice.bot)]
         if policy.bytes.len == 0: return
       if online:
         if choice.human: client.claimHuman(index)
@@ -891,7 +899,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         front.ui.selectedSeat < 0 and front.contextSeat < 0 and
         not front.contextDismissed and emptyCount > 0
     var choice = "Fill"
-    sk.lobbyBotSelect(window, choice, ["Classic", "Truce"],
+    sk.lobbyBotSelect(window, choice, LobbyBotNames,
       front.ui.fillBotMenu, fill, 420, canFill)
     let selectorHeight = sk.atlas.fonts[sk.textStyle].lineHeight +
       sk.theme.padding.float32 * 2
@@ -899,7 +907,10 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     if choice != "Fill" or (canFill and wasOpen != front.ui.fillBotMenu.open):
       front.emitUiCue(UiClick)
     if choice != "Fill":
-      front.fillBots(if choice == "Classic": ClassicBot else: TruceBot)
+      for bot in LobbyBot:
+        if choice == LobbyBotNames[bot]:
+          front.fillBots(bot)
+          break
       front.ui.fillBotMenu = LobbyBotMenu()
     elif wasOpen and not front.ui.fillBotMenu.open and
       window.buttonPressed[MouseLeft]:

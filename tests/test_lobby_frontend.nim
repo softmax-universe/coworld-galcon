@@ -1,6 +1,9 @@
+import std/[importutils, os]
 import jsony
 import polyworld/networks
-import galcon/[frontends, multiplayer, options, common]
+import galcon/[frontends, multiplayer, options, common, bots, worlds]
+
+privateAccess(Frontend)
 
 let front = newFrontend(parseOptions(@["--players", "16"]))
 front.connection = Connection(stats: NetworkStats(),
@@ -61,4 +64,69 @@ proc testLobbyLifecycle*() =
   doAssert front.config.players == 16
 
 testLobbyLifecycle()
+
+for bot in LobbyBot:
+  let
+    source = readFile(Root / "players" /
+      ["classic.bas", "truce.bas", "expand.bas", "chatty.bas"][bot.ord])
+    existing = LocalPolicy(name: "Custom Bot", bytes: "count = count + 1\n")
+    local = Frontend(config: MatchConfig(players: 4), localHuman: 1)
+  local.policies[1] = existing
+  local.fillBots(bot)
+  doAssert local.localHuman == 1 and local.policies[0].bytes.len == 0
+  doAssert local.policies[1] == existing, "Fill preserves existing local bots"
+  for i in 2 .. 3:
+    doAssert local.policies[i].name == LobbyBotNames[bot] & " Bot"
+    doAssert local.policies[i].bytes == source,
+      "Each Fill choice installs its bundled policy source"
+  let filled = local.policies
+  local.fillBots(ClassicBot)
+  doAssert local.policies == filled, "Filling a full local roster changes nothing"
+
+  let online = Frontend(config: MatchConfig(players: 6), online: true,
+    connection: Connection(stats: NetworkStats(),
+      client: RoomClient(participant: 1, welcomed: true, connected: true)))
+  online.connection.client.snapshot = RoomMessage(kind: RoomState,
+    room: "bot-catalog", participant: 1, phase: Lobby,
+    seats: @[Seat(owner: 1, name: "Human"),
+      Seat(owner: 1, name: existing.name), Seat(owner: 2, name: "Human"),
+      Seat(owner: 2, name: "Guest Bot"), Seat(), Seat()])
+  online.networkPolicies[1] = existing
+  let occupied = online.networkPolicies
+  online.fillBots(bot)
+  doAssert online.connection.client.outgoing.len == 2,
+    "Network Fill claims only the two empty slots"
+  for i in 0 .. 3:
+    doAssert online.networkPolicies[i] == occupied[i],
+      "Fill leaves host and guest occupied slots untouched"
+  for i, bytes in online.connection.client.outgoing:
+    let claim = decode(bytes)
+    doAssert claim.kind == ClaimSeat and claim.seat == (i + 4).uint32
+    doAssert claim.name == LobbyBotNames[bot] & " Bot"
+    doAssert online.networkPolicies[i + 4].bytes == source
+    doAssert online.networkPolicies[i + 4].name == claim.name
+
+for bot in [ExpandBot, ChattyBot]:
+  let world = newWorld(Setup(seed: 3, counts: @[1, 1, 1]))
+  var source, target: int
+  for i, planet in world.planets:
+    if planet.owner == 1: source = i
+    elif planet.owner == 0: target = i
+    planet.frame = 0
+    planet.morale = 100
+    planet.realMorale = 100
+  world.planets[source].ships = stock(100)
+  world.planets[source].realShips = stock(100)
+  world.planets[source].neighbors = @[target]
+  world.planets[target].ships = stock(5)
+  let brain = newBrain(world, 1, LobbyBotPolicies[bot].bytes)
+  brain.decide()
+  doAssert not brain.failed, brain.error
+  doAssert world.orders.len == 1,
+    LobbyBotNames[bot] & " must launch ships from a ready owned planet"
+  let order = world.orders[0]
+  doAssert order.player == 1 and order.source == source.int32 and
+    order.target == target.int32 and order.count > 0
+
+echo "All bundled bots fill only empty slots; Expand and Chatty issue real orders"
 echo "Lobby defaults, resizing, bot removal, context target and local preference passed"
