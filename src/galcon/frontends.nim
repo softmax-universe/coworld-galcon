@@ -13,6 +13,8 @@ const
 type
   LobbyBot* = enum
     ClassicBot, TruceBot
+  UiCue* = enum
+    UiHover, UiClick
   Frontend* = ref object
     page*: MenuPage = HomeMenu
     preferences*: Preferences
@@ -22,6 +24,7 @@ type
     prepared*: NetworkMatch
     launch*: Session
     error*: string
+    onUiCue*: proc(cue: UiCue)
     roomName: string
     matchName: string
     editingPlayer: bool
@@ -57,6 +60,52 @@ type
     slider: int = -1
     sliderLeft, sliderWidth, sliderScale: float32
     rng: Rand
+
+proc emitUiCue*(front: Frontend, cue: UiCue) =
+  ## Sends optional interface feedback without touching match state.
+  if front.onUiCue != nil:
+    front.onUiCue(cue)
+
+proc menuHover(front: Frontend, sk: Silky, bounds: Rect,
+    enabled = true) =
+  ## Plays hover feedback only on entry into the enabled visible target.
+  let previous = sk.mousePos - sk.mouseDelta
+  if enabled and sk.interactor.currentId == sk.interactor.hotId and
+    not sk.mouseConsumed and not sk.buttonDown[MouseLeft] and
+    overlaps(sk.mousePos, bounds) and overlaps(sk.mousePos, sk.clipRect) and
+    (not overlaps(previous, bounds) or not overlaps(previous, sk.clipRect)):
+      front.emitUiCue(UiHover)
+
+proc menuButton*(
+    front: Frontend, sk: Silky, text: string, at: Vec2, width: float32,
+    icon = "", enabled = true, selected = false, height = 44.0'f,
+    tint = rgbx(255, 255, 255, 255), iconTint = rgbx(0, 0, 0, 0)
+): bool =
+  ## Adds entry and activation cues to the shared button's real hit testing.
+  result = lobbies.lobbyButton(sk, text, at, width, icon, enabled,
+    selected, height, tint, iconTint)
+  front.menuHover(sk, rect(at, vec2(width, height)), enabled)
+  if result:
+    front.emitUiCue(UiClick)
+
+proc menuSelect[T](
+    front: Frontend, sk: Silky, window: Window, value: var T,
+    choices: openArray[T], at: Vec2, width: float32, enabled = true
+) =
+  ## Acknowledges changed dropdown choices through local interface feedback.
+  let previous = value
+  sk.lobbySelect(window, value, choices, at, width, enabled)
+  front.menuHover(sk, rect(at, vec2(width, 44)), enabled)
+  if value != previous:
+    front.emitUiCue(UiClick)
+
+proc menuCheckBox(front: Frontend, sk: Silky, window: Window,
+    caption: string, value: var bool) =
+  ## Acknowledges checkbox changes using the shared widget's activation.
+  let previous = value
+  checkBox caption, value
+  if value != previous:
+    front.emitUiCue(UiClick)
 
 proc newFrontend*(options: Options): Frontend =
   ## Loads saved settings and an independent, editable local match roster.
@@ -525,7 +574,7 @@ proc browser(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
   sk.lobbyLabel("server", at + vec2(20, 16), 110)
   sk.lobbyInput(window, "server", front.preferences.server,
     at + vec2(132, 16), 930)
-  if sk.lobbyButton(if connected: "reconnect" else: "connect",
+  if front.menuButton(sk, if connected: "reconnect" else: "connect",
     at + vec2(1080, 16), 190):
       front.connect()
   sk.lobbyLabel(if connected: "online" else: "offline",
@@ -533,7 +582,7 @@ proc browser(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
   sk.lobbyPanel(layout.left, vec2(layout.leftWidth, layout.panelHeight))
   let list = layout.left + vec2(24)
   sk.lobbyLabel("public rooms", list, 600, "LobbyHeading", MenuGreen)
-  if sk.lobbyButton("refresh", list + vec2(704, 0), 178, enabled = connected):
+  if front.menuButton(sk, "refresh", list + vec2(704, 0), 178, enabled = connected):
     front.refreshRooms(getMonoTime().ticks.float64 / 1_000_000_000, manual = true)
   sk.lobbyInput(window, "search", front.search, list + vec2(0, 60), 882)
   sk.lobbyLabel("room", list + vec2(0, 116), 390, tint = LobbyMuted)
@@ -554,7 +603,7 @@ proc browser(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     sk.lobbyLabel($room.occupied & "/" & $room.seats,
       point + vec2(400, 0), 140)
     sk.lobbyLabel($room.phase, point + vec2(560, 0), 160)
-    if sk.lobbyButton(if room.phase == Lobby: "join" else: "watch",
+    if front.menuButton(sk, if room.phase == Lobby: "join" else: "watch",
       point + vec2(730, 0), 130):
         front.connection.client.send(RoomMessage(kind: JoinRoom, room: room.id))
   if listings.len == 0:
@@ -566,26 +615,26 @@ proc browser(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
   sk.lobbyLabel("create room", create, 452, "LobbyHeading", MenuGreen)
   sk.lobbyLabel("room name", create + vec2(0, 60), 452)
   sk.lobbyInput(window, "room", front.roomName, create + vec2(0, 104), 452)
-  if sk.lobbyButton("public", create + vec2(0, 168), 220,
+  if front.menuButton(sk, "public", create + vec2(0, 168), 220,
     selected = front.publicRoom):
       front.publicRoom = true
-  if sk.lobbyButton("private", create + vec2(232, 168), 220,
+  if front.menuButton(sk, "private", create + vec2(232, 168), 220,
     selected = not front.publicRoom):
       front.publicRoom = false
-  if sk.lobbyButton("create room", create + vec2(0, 232), 452,
+  if front.menuButton(sk, "create room", create + vec2(0, 232), 452,
     enabled = connected and front.roomName.strip().len > 0):
       front.createRoom()
   sk.lobbyLabel("join by invite", create + vec2(0, 332), 452,
     "LobbyHeading", MenuGreen)
   sk.lobbyLabel("link or room code", create + vec2(0, 388), 452)
   sk.lobbyInput(window, "invite", front.invite, create + vec2(0, 432), 452)
-  if sk.lobbyButton("join room", create + vec2(0, 496), 452,
+  if front.menuButton(sk, "join room", create + vec2(0, 496), 452,
     enabled = connected and front.invite.strip().len > 0):
       if '?' in front.invite:
         for key, value in decodeQuery(parseUri(front.invite).query):
           if key == "room": front.invite = value
       front.pendingJoin = true
-  if sk.lobbyButton("back", layout.footer, 190):
+  if front.menuButton(sk, "back", layout.footer, 190):
     front.leave()
 
 proc configPanel(front: Frontend, sk: Silky, window: Window,
@@ -600,7 +649,7 @@ proc configPanel(front: Frontend, sk: Silky, window: Window,
     if front.matchName.len == 0: front.matchName = front.connection.client.snapshot.name
     if enabled:
       sk.lobbyInput(window, "gameName", front.matchName, point + vec2(0, 48), 330)
-      if sk.lobbyButton("save", point + vec2(342, 48), 110,
+      if front.menuButton(sk, "save", point + vec2(342, 48), 110,
         enabled = validName(front.matchName) and front.matchName != front.connection.client.snapshot.name):
           front.renameGame(front.matchName)
     else:
@@ -632,15 +681,15 @@ proc configPanel(front: Frontend, sk: Silky, window: Window,
     452, 1'i32, 30'i32, 1'i32, enabled)
   if enabled: front.config.maximumTicks = minutes * TickRate * 60
   sk.lobbyLabel("difficulty", content + vec2(0, 422), 190)
-  sk.lobbySelect(window, front.config.difficulty, [Easy, Medium, Hard, Crazy],
+  front.menuSelect(sk, window, front.config.difficulty, [Easy, Medium, Hard, Crazy],
     content + vec2(196, 422), 256, enabled)
   if enabled:
     sk.at = content + vec2(0, 478)
-    checkBox "enemy fleets pass through", front.config.enemyShipsPassThrough
+    front.menuCheckBox(sk, window, "enemy fleets pass through", front.config.enemyShipsPassThrough)
     sk.at = content + vec2(0, 526)
-    checkBox "neutrals do not grow", front.config.neutralsDontProduce
+    front.menuCheckBox(sk, window, "neutrals do not grow", front.config.neutralsDontProduce)
     sk.at = content + vec2(0, 566)
-    checkBox "Balanced Map", front.config.balancedMap
+    front.menuCheckBox(sk, window, "Balanced Map", front.config.balancedMap)
   else:
     sk.lobbyLabel("fleets pass through: " & $front.config.enemyShipsPassThrough,
       content + vec2(0, 478), 452)
@@ -716,7 +765,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         if participant.id == seat.owner:
           if human: label = participant.name
           status = if participant.ready: "ready" else: "not ready"
-    if sk.lobbyButton("", point, 360, height = 64,
+    if front.menuButton(sk, "", point, 360, height = 64,
       enabled = enabled and visible and hovered and (mine or empty)):
         front.ui.selectedSeat = i
     sk.drawRect(point + vec2(12, 16), vec2(14, 32),
@@ -726,29 +775,29 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     sk.lobbyLabel(status, point + vec2(38, 28), 300,
       tint = if online and not empty: readinessColor(status == "ready")
         else: LobbyMuted)
-    if sk.lobbyButton("-", point + vec2(370, 14), 38, height = 36,
+    if front.menuButton(sk, "-", point + vec2(370, 14), 38, height = 36,
       enabled = enabled and hovered and not empty and
         (mine or (owner and not human))):
           front.removePlayer(i)
   sk.popClipRect()
   let fill = layout.left + vec2(24, layout.panelHeight - 142)
   if owner:
-    if sk.lobbyButton("add player", fill - vec2(0, 52), 200,
+    if front.menuButton(sk, "add player", fill - vec2(0, 52), 200,
       enabled = enabled and front.config.players < MaxPlayers):
         front.resizeRoster(front.config.players + 1)
     let last = front.config.players - 1
     let removable = not online or (last < snapshot.seats.len and
       snapshot.seats[last].owner in [0'u32, client.participant])
-    if sk.lobbyButton("remove last", fill + vec2(218, -52), 202,
+    if front.menuButton(sk, "remove last", fill + vec2(218, -52), 202,
       enabled = enabled and front.config.players > 2 and removable):
         front.resizeRoster(front.config.players - 1)
-    if sk.lobbyButton("shuffle team", fill + vec2(436, 0), 418,
+    if front.menuButton(sk, "shuffle team", fill + vec2(436, 0), 418,
       enabled = enabled): front.shuffleTeam()
   sk.lobbyLabel(if online: "Shuffles host-owned slots only; guests keep their seats."
     else: "each color is an independent player",
     fill + vec2(0, 54), 880, tint = LobbyMuted)
   front.configPanel(sk, window, layout.right, layout.panelHeight, enabled and owner)
-  if sk.lobbyButton("back", layout.footer, 190, enabled = not modal):
+  if front.menuButton(sk, "back", layout.footer, 190, enabled = not modal):
     if online:
       client.send(RoomMessage(kind: LeaveRoom))
       front.online = false
@@ -756,7 +805,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
       front.page = MultiplayerMenu
     else: front.page = HomeMenu
   if online:
-    if sk.lobbyButton("copy invite", layout.footer + vec2(206, 0), 230,
+    if front.menuButton(sk, "copy invite", layout.footer + vec2(206, 0), 230,
       enabled = not modal):
         copyInvite(inviteBase() & "?server=" & encodeUrl(front.preferences.server) &
           "&room=" & encodeUrl(snapshot.room))
@@ -764,7 +813,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     for participant in snapshot.participants:
       if participant.id == client.participant:
         selfReady = participant.ready
-    if sk.lobbyButton("ready", layout.footer + vec2(452, 0), 190,
+    if front.menuButton(sk, "ready", layout.footer + vec2(452, 0), 190,
       enabled = enabled and ownCount > 0):
         client.send(RoomMessage(kind: ReadyStatus, flag: not selfReady))
     # Galcon has no shared status-icon atlas; keep GotA's readiness colors
@@ -772,7 +821,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     sk.drawRect(layout.footer + vec2(468, 16), vec2(12),
       if enabled and ownCount > 0: readinessColor(selfReady)
       else: sk.theme.disabledTextColor)
-  if owner and sk.lobbyButton(if online and snapshot.phase in {Ended, Desynced}:
+  if owner and front.menuButton(sk, if online and snapshot.phase in {Ended, Desynced}:
     "return to lobby" else: "start game", layout.primary, 250,
     enabled = not modal and owner and not front.synchronizing() and
       emptyCount < front.config.players, tint = rgbx(143, 255, 162, 255)):
@@ -796,7 +845,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         window.size.y.float32 / sk.uiScale - 176))
     sk.lobbyPanel(popup, vec2(280, 176))
     sk.lobbyLabel("player actions", popup + vec2(12, 0), 256)
-    if sk.lobbyButton(if (if online: front.contextKind == "Human" else: false):
+    if front.menuButton(sk, if (if online: front.contextKind == "Human" else: false):
       "kick player" else: "remove bot",
       popup + vec2(12, 44), 256, enabled = canKick or canRemove) and
       front.contextArmed:
@@ -807,7 +856,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
       if not inside:
         front.contextSeat = -1
         front.contextDismissed = true
-    if sk.lobbyButton("cancel", popup + vec2(12, 104), 256) or
+    if front.menuButton(sk, "cancel", popup + vec2(12, 104), 256) or
       window.buttonPressed[KeyEscape]:
         front.contextSeat = -1
   if front.ui.selectedSeat >= 0:
@@ -816,6 +865,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
       LocalPolicy(name: "Classic Bot", bytes: BaselineSource)
     ])
     if choice.chosen:
+      front.emitUiCue(UiClick)
       let index = front.ui.selectedSeat
       var policy: LocalPolicy
       if not choice.clear and not choice.human:
@@ -843,6 +893,11 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     var choice = "Fill"
     sk.lobbyBotSelect(window, choice, ["Classic", "Truce"],
       front.ui.fillBotMenu, fill, 420, canFill)
+    let selectorHeight = sk.atlas.fonts[sk.textStyle].lineHeight +
+      sk.theme.padding.float32 * 2
+    front.menuHover(sk, rect(fill, vec2(420, selectorHeight)), canFill)
+    if choice != "Fill" or (canFill and wasOpen != front.ui.fillBotMenu.open):
+      front.emitUiCue(UiClick)
     if choice != "Fill":
       front.fillBots(if choice == "Classic": ClassicBot else: TruceBot)
       front.ui.fillBotMenu = LobbyBotMenu()
@@ -918,7 +973,7 @@ proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
   let before = front.preferences.toJson()
   sk.lobbyPanel(at - vec2(24), vec2(928, 620))
   for i, caption in ["display", "sound", "controls", "networking"]:
-    if sk.lobbyButton(caption, at + vec2(i.float32 * 224, 0), 208,
+    if front.menuButton(sk, caption, at + vec2(i.float32 * 224, 0), 208,
       selected = front.settingsTab == i):
         front.settingsTab = i
         front.captureAction = -1
@@ -926,7 +981,7 @@ proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
   let p = at + vec2(0, 80)
   template selectRow(caption: string, value: untyped, choices: untyped, y: float32) =
     sk.lobbyLabel(caption, p + vec2(0, y), 260)
-    sk.lobbySelect(window, value, choices, p + vec2(280, y), 580)
+    front.menuSelect(sk, window, value, choices, p + vec2(280, y), 580)
   case front.settingsTab
   of 0:
     selectRow("window mode", front.preferences.windowMode,
@@ -935,7 +990,7 @@ proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
       [CurrentResolution, Resolution720, Resolution900, Resolution1080,
         Resolution1440, Resolution2160], 62)
     sk.at = p + vec2(0, 136)
-    checkBox "visual interpolation", front.preferences.interpolation
+    front.menuCheckBox(sk, window, "visual interpolation", front.preferences.interpolation)
     selectRow("fps limit", front.preferences.fps, [30, 60, 120, 0], 196)
     selectRow("ui scaling", front.preferences.uiScaleMode,
       [AutoUiScale, CustomUiScale], 258)
@@ -946,7 +1001,7 @@ proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
   of 1:
     sk.at = p
     when compiles(front.preferences.soundMuted):
-      checkBox "mute all sound", front.preferences.soundMuted
+      front.menuCheckBox(sk, window, "mute all sound", front.preferences.soundMuted)
     else:
       sk.lobbyLabel("Set main volume to 0 to mute", p, 860, tint = LobbyMuted)
     front.settingSlider(sk, window, 1, "main volume", front.preferences.mainVolume,
@@ -955,6 +1010,8 @@ proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
       p + vec2(0, 140), 0, 100)
     front.settingSlider(sk, window, 3, "effects volume", front.preferences.fxVolume,
       p + vec2(0, 210), 0, 100)
+    front.settingSlider(sk, window, 4, "interface volume", front.preferences.uiVolume,
+      p + vec2(0, 280), 0, 100)
   of 2:
     if front.captureAction >= 0:
       for key in Button:
@@ -970,13 +1027,13 @@ proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
     for i, control in GalconControls.actions:
       let row = p + vec2(0, i.float32 * 46)
       sk.lobbyLabel(control.label, row, 490)
-      if sk.lobbyButton(if front.captureAction == i: "press a key..."
+      if front.menuButton(sk, if front.captureAction == i: "press a key..."
         else: front.preferences.bindings[control.action][0].bindingLabel,
         row + vec2(500, 0), 360, enabled = front.captureAction < 0):
           front.captureAction = i
     sk.lobbyLabel("tab: scores   enter: chat   0-9: fleet size",
       p + vec2(0, 336), 860, tint = LobbyMuted)
-    if sk.lobbyButton("reset controls", p + vec2(0, 390), 360):
+    if front.menuButton(sk, "reset controls", p + vec2(0, 390), 360):
       front.preferences.bindings = GalconControls.defaults
   else:
     sk.lobbyLabel("player name", p, 260)
@@ -992,7 +1049,7 @@ proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
     front.preferences.applyPreferences(window,
       previous.windowMode != front.preferences.windowMode or
       previous.resolution != front.preferences.resolution)
-  if sk.lobbyButton("save and back", at + vec2(0, 520), 300,
+  if front.menuButton(sk, "save and back", at + vec2(0, 520), 300,
     enabled = front.captureAction < 0):
       if front.preferences.name.strip().len == 0 or front.preferences.name.len > 64:
         raise newException(GalconError, "Player name must be 1 to 64 characters")
@@ -1021,18 +1078,23 @@ proc identityUi*(front: Frontend, sk: Silky, window: Window): bool =
       else: "Change your player name", at + vec2(24, 20), 572, "LobbyHeading")
     sk.lobbyInput(window, "newPlayerName", front.playerDraft, at + vec2(24, 80), 572)
     let valid = confirmedPlayerName(front.playerDraft)
-    if sk.lobbyButton("Cancel", at + vec2(24, 188), 180) or window.buttonPressed[KeyEscape]:
+    if front.menuButton(sk, "Cancel", at + vec2(24, 188), 180) or window.buttonPressed[KeyEscape]:
       front.editingPlayer = false
       front.playerDraft = ""
       front.page = HomeMenu
-    elif sk.lobbyButton(if front.needsPlayerName(): "Continue" else: "Save",
+    elif front.menuButton(sk, if front.needsPlayerName(): "Continue" else: "Save",
       at + vec2(396, 188), 200, enabled = valid) or
       (valid and window.buttonPressed[KeyEnter]):
         front.savePlayerName(front.playerDraft)
     return
-  if sk.playerButton(window, front.preferences.name,
-    not front.ui.fillBotMenu.open and not front.contextDismissed and
-      (not front.online or front.connection.client.snapshot.phase == Lobby)):
+  let
+    view = window.size.vec2 / sk.uiScale
+    label = if front.preferences.name.len == 0: "Player name"
+      else: front.preferences.name
+    enabled = not front.ui.fillBotMenu.open and not front.contextDismissed and
+      (not front.online or front.connection.client.snapshot.phase == Lobby)
+  if front.menuButton(sk, sk.fittedLabel(label, 180, "LobbyBody"),
+    vec2(view.x - 264, 16), 240, "character", enabled):
     front.playerDraft = front.preferences.name
     front.editingPlayer = true
     result = true

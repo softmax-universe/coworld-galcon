@@ -81,6 +81,9 @@ type
     lastTime: MonoTime
     music, launchSound, blastSound, captureSound: Sound
     musicSource, launchSource, blastSource, captureSource: Source
+    uiSounds: array[UiCue, Sound]
+    uiSources: array[UiCue, Source]
+    uiLastPlayed: array[UiCue, float64]
     musicEnabled: bool
     seenCaptures, seenImpacts: int
     chatting: bool
@@ -160,8 +163,71 @@ proc playSource(source: Source) =
     source.stop()
     source.play()
 
+proc syncAudio(view: View) =
+  ## Applies saved channel levels and keeps one soundtrack across all screens.
+  let volume =
+    when compiles(view.front.preferences.soundMuted):
+      if view.options.muted or view.front.preferences.soundMuted: 0.0'f
+      else: view.front.preferences.mainVolume.float32 / 100
+    else:
+      if view.options.muted: 0.0'f
+      else: view.front.preferences.mainVolume.float32 / 100
+  if view.musicSource != nil:
+    view.musicSource.gain = volume *
+      view.front.preferences.musicVolume.float32 / 100
+    if view.musicEnabled:
+      if not view.musicSource.playing:
+        view.musicSource.play()
+    elif view.musicSource.playing:
+      view.musicSource.stop()
+  for source in [view.launchSource, view.blastSource, view.captureSource]:
+    if source != nil:
+      source.gain = volume * view.front.preferences.fxVolume.float32 / 100
+  for cue in UiCue:
+    if view.uiSources[cue] != nil:
+      view.uiSources[cue].gain = volume *
+        view.front.preferences.uiVolume.float32 / 100 *
+        (if cue == UiHover: 0.22'f else: 0.38'f)
+
+proc uiTone(cue: UiCue): Sound =
+  ## Makes short, softly enveloped interface tones without extra asset files.
+  const SampleRate = 22050
+  let
+    duration = if cue == UiHover: 0.035 else: 0.06
+    samples = int(duration * SampleRate)
+  var pcm = newSeq[uint8](samples * 2)
+  for i in 0 ..< samples:
+    let
+      time = i.float64 / SampleRate
+      envelope = sin(PI * i.float64 / (samples - 1).float64)
+      phase = 2 * PI * (if cue == UiHover: 880 * time
+        else: 640 * time + 2400 * time * time)
+      sample = int16(sin(phase) * envelope * envelope * 12000)
+      bits = cast[uint16](sample)
+    pcm[i * 2] = uint8(bits and 255)
+    pcm[i * 2 + 1] = uint8(bits shr 8)
+  newSound(pcm, SampleRate)
+
+proc soundSource(sound: Sound): Source =
+  ## Prepares a reusable voice silently before applying its channel volume.
+  result = newSource()
+  result.sound = sound
+  result.gain = 0
+
+proc playUiCue(view: View, cue: UiCue) =
+  ## Plays one short UI cue with a bounded rate, independent of game effects.
+  let source = view.uiSources[cue]
+  if source == nil:
+    return
+  view.syncAudio()
+  let now = getMonoTime().ticks.float64 / 1_000_000_000
+  if source.gain <= 0 or now - view.uiLastPlayed[cue] < 0.07:
+    return
+  view.uiLastPlayed[cue] = now
+  source.playSource()
+
 proc initSounds(view: View) =
-  ## Loads Phil Hassey's original soundtrack and three sound effects.
+  ## Loads the original music, battle effects and two quiet interface cues.
   if view.options.muted:
     return
   try:
@@ -170,16 +236,19 @@ proc initSounds(view: View) =
     view.launchSound = newSound(Assets / "launch.wav")
     view.blastSound = newSound(Assets / "blast.wav")
     view.captureSound = newSound(Assets / "takeover.wav")
-    view.musicSource = view.music.play()
+    view.musicSource = view.music.soundSource()
     view.musicSource.looping = true
-    view.musicSource.stop()
-    view.launchSource = view.launchSound.play()
-    view.blastSource = view.blastSound.play()
-    view.captureSource = view.captureSound.play()
-    view.launchSource.stop()
-    view.blastSource.stop()
-    view.captureSource.stop()
+    view.launchSource = view.launchSound.soundSource()
+    view.blastSource = view.blastSound.soundSource()
+    view.captureSource = view.captureSound.soundSource()
+    for cue in UiCue:
+      view.uiSounds[cue] = uiTone(cue)
+      view.uiSources[cue] = view.uiSounds[cue].soundSource()
+    view.front.onUiCue = proc(cue: UiCue) =
+      ## Connects frontend feedback to this view's bounded audio voices.
+      view.playUiCue(cue)
     view.musicEnabled = true
+    view.syncAudio()
   except SlappyError as error:
     echo "Original audio unavailable: ", error.msg
 
@@ -266,8 +335,6 @@ proc start(view: View, tutorial = 0, provided: Session = nil) =
   view.lastTime = getMonoTime()
   view.seenCaptures = 0
   view.seenImpacts = 0
-  if view.musicSource != nil and view.musicEnabled:
-    view.musicSource.play()
 
 const MainMenuItems =
   when defined(emscripten): ["tutorial", "single player", "multiplayer", "settings", "help"]
@@ -318,8 +385,6 @@ proc returnToMenu(view: View) =
   view.session.finish()
   view.front.leave()
   view.screen = MenuScreen
-  if view.musicSource != nil:
-    view.musicSource.stop()
 
 proc syncResults(view: View, now: float64) =
   ## Drain Ended history first, then show the authoritative final world even if
@@ -723,18 +788,18 @@ proc drawMatchMenu(view: View) =
       view.sk.lobbyLabel("Leave game?", origin, 416, "LobbyHeading")
       view.sk.lobbyLabel("Are you sure you want to leave?", origin + vec2(0, 64), 416)
       view.sk.lobbyLabel("The game is still running.", origin + vec2(0, 104), 416)
-      if view.sk.lobbyButton("Cancel", origin + vec2(0, 176), 416):
+      if view.front.menuButton(view.sk, "Cancel", origin + vec2(0, 176), 416):
         view.matchMenu = GameMenu
-      elif view.sk.lobbyButton("Leave game", origin + vec2(0, 240), 416):
+      elif view.front.menuButton(view.sk, "Leave game", origin + vec2(0, 240), 416):
         view.returnToMenu()
     of GameMenu:
       view.sk.lobbyLabel("Game Menu", origin, 416, "LobbyHeading")
       view.sk.lobbyLabel("Game continues in the background", origin + vec2(0, 48), 416)
-      if view.sk.lobbyButton("Resume", origin + vec2(0, 104), 416):
+      if view.front.menuButton(view.sk, "Resume", origin + vec2(0, 104), 416):
         view.matchMenu = HiddenMatchMenu
-      elif view.sk.lobbyButton("Settings", origin + vec2(0, 168), 416):
+      elif view.front.menuButton(view.sk, "Settings", origin + vec2(0, 168), 416):
         view.matchMenu = GameSettings
-      elif view.sk.lobbyButton("Leave game", origin + vec2(0, 232), 416):
+      elif view.front.menuButton(view.sk, "Leave game", origin + vec2(0, 232), 416):
         view.matchMenu = ConfirmLeave
   except GalconError, RoomsError, MenusError, IOError, OSError:
     view.front.error = getCurrentExceptionMsg()
@@ -921,10 +986,7 @@ proc handleInput(view: View) =
     gameProfiles.toggleRuntimeTrace()
   if window.buttonPressed[KeyF3] and view.musicSource != nil:
     view.musicEnabled = not view.musicEnabled
-    if view.musicEnabled and view.screen in {GameScreen, TutorialScreen}:
-      view.musicSource.play()
-    else:
-      view.musicSource.stop()
+    view.syncAudio()
   if window.actionPressed(FullscreenInput):
     window.fullscreen = not window.fullscreen
   if debugMenuOpen:
@@ -954,6 +1016,7 @@ proc handleInput(view: View) =
       view.controls.holding = false
   case view.screen
   of MenuScreen:
+    let previousSelection = view.selection
     when not defined(emscripten):
       if window.buttonPressed[KeyEscape]: view.closing = true
     if window.buttonPressed[KeyDown]:
@@ -963,7 +1026,16 @@ proc handleInput(view: View) =
     let overMenu = x in 80 .. 560 and y >= 120 and y < 120 + MainMenuItems.len * 46
     if overMenu and window.mouseDelta != ivec2(0, 0):
       view.selection = clamp((y - 120) div 46, 0, MainMenuItems.high)
+    let
+      previousPointer = pointer - window.mouseDelta.vec2 / view.sk.uiScale
+      enteredItem = overMenu and window.mouseDelta != ivec2(0, 0) and
+        not overlaps(previousPointer,
+          rect(80, (120 + view.selection * 46).float32, 480, 46))
+    if not window.buttonDown[MouseLeft] and
+      (view.selection != previousSelection or enteredItem):
+        view.front.emitUiCue(UiHover)
     if entered or (clicked and overMenu):
+      view.front.emitUiCue(UiClick)
       view.menuAction()
   of FrontScreen:
     discard
@@ -1059,16 +1131,11 @@ proc frame(view: View) =
     elapsed = min(0.25, (now - view.lastTime).inNanoseconds.float64 / 1e9)
     frameStart = epochTime()
   view.lastTime = now
-  if view.musicSource != nil:
-    let volume =
-      when compiles(view.front.preferences.soundMuted):
-        if view.front.preferences.soundMuted: 0.0'f
-        else: view.front.preferences.mainVolume.float32 / 100
-      else:
-        view.front.preferences.mainVolume.float32 / 100
-    view.musicSource.gain = volume * view.front.preferences.musicVolume.float32 / 100
-    for source in [view.launchSource, view.blastSource, view.captureSource]:
-      source.gain = volume * view.front.preferences.fxVolume.float32 / 100
+  if (view.screen == FrontScreen or
+    (view.screen == MenuScreen and view.front.nameDialogOpen())) and
+    view.window.buttonPressed[KeyF3] and view.musicSource != nil:
+      view.musicEnabled = not view.musicEnabled
+  view.syncAudio()
   when not defined(emscripten):
     view.window.updateWindowSettings()
   # Consume gameplay/UI input before draining a potentially expensive network
@@ -1306,12 +1373,13 @@ proc runGraphics*(options: Options) =
     pollEvents()
 
   view.front.leave()
+  view.front.onUiCue = nil
   if view.session != nil:
     view.session.observer = nil
     view.session.tickObserver = nil
     view.session.finish()
   for source in [view.musicSource, view.launchSource, view.blastSource,
-    view.captureSource]:
+    view.captureSource, view.uiSources[UiHover], view.uiSources[UiClick]]:
       if source != nil:
-        source.stop()
+        source.close()
   window.close()
