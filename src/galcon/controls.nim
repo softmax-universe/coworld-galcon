@@ -8,7 +8,7 @@ type
     percent*: int = 50
     anchor*, hover*: int = -1
     x*, y*, startX*, startY*: int
-    holding*, box*, moved*, double*, additive*, ordering*: bool
+    holding*, box*, moved*, ordering*: bool
 
 proc planetAt*(world: World, x, y: int): int =
   ## Finds the closest planet under a quantized logical pointer.
@@ -79,7 +79,8 @@ proc press*(
     controls: var Controls, world: World, x, y: int,
     double = false, additive = false
 ) =
-  ## Starts a planet drag or box selection and handles select-all double clicks.
+  ## Selects a planet and starts a box gesture from any point on the board.
+  controls.cancelGesture()
   controls.clean(world)
   controls.point(world, x, y)
   controls.startX = x
@@ -87,22 +88,18 @@ proc press*(
   controls.anchor = controls.hover
   controls.holding = true
   controls.ordering = false
-  controls.box = controls.anchor < 0
+  controls.box = true
   controls.moved = false
-  controls.double = double
-  controls.additive = additive
 
-  if controls.box:
-    if not additive:
-      controls.clear()
-    controls.before = controls.selected
-  elif world.planets[controls.anchor].owner == controls.player:
-    if double:
-      controls.selectAll(world)
-    elif not controls.selected[controls.anchor]:
-      if not additive:
-        controls.clear()
-      controls.selected[controls.anchor] = true
+  if not additive:
+    controls.clear()
+  controls.before = controls.selected
+  if controls.anchor >= 0 and
+    world.planets[controls.anchor].owner == controls.player:
+      if double:
+        controls.selectAll(world)
+      else:
+        controls.selected[controls.anchor] = true
 
 proc sendSelected*(controls: var Controls, world: World, target: int,
     submit: SubmitOrder = nil): int =
@@ -119,35 +116,24 @@ proc sendSelected*(controls: var Controls, world: World, target: int,
 
 proc pressOrder*(controls: var Controls, world: World, x, y: int) =
   ## Right hold previews the existing sources; only its release submits orders.
-  controls.holding = false
+  controls.cancelGesture()
   controls.clean(world)
   controls.point(world, x, y)
-  controls.box = false
-  controls.ordering = true
-  if controls.hover < 0:
-    controls.clear()
-  else:
+  if controls.hover >= 0:
+    controls.ordering = true
     controls.holding = true
 
 proc release*(
     controls: var Controls, world: World, x, y: int,
     submit: SubmitOrder = nil
 ): int =
-  ## Completes a left selection/drag or submits a held right-order preview once.
+  ## Completes a box selection or submits a held right-order preview once.
   if not controls.holding:
     return 0
   controls.point(world, x, y)
   controls.clean(world)
-  let target = controls.hover
   if controls.ordering:
-    result += controls.sendSelected(world, target, submit)
-  elif not controls.box and not controls.double:
-    if target >= 0 and target != controls.anchor:
-      result += controls.sendSelected(world, target, submit)
-    elif not controls.moved and target >= 0 and not controls.additive:
-      controls.clear()
-      if world.planets[target].owner == controls.player:
-        controls.selected[target] = true
+    result += controls.sendSelected(world, controls.hover, submit)
   controls.holding = false
   controls.box = false
   controls.ordering = false

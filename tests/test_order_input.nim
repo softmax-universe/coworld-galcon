@@ -52,8 +52,21 @@ proc key(button: Button) =
   view.handleInput()
   window.state.perFrame = PerFrame()
   window.handleButtonRelease(button)
+  if button == DoubleClick:
+    window.handleButtonRelease(MouseLeft)
   view.handleInput()
   window.state.perFrame = PerFrame()
+# Execute the real game drawing pass, measuring actual Silky triangle geometry.
+for i in 0 ..< world.planets.len: view.planetSprites[i] = "Planet"
+view.boardRevision = world.revision
+view.effects = Effects(seed: world.setup.seed)
+view.stat = 3
+proc gameGeometry(): seq[Vec2] =
+  ## Collects the rendered game geometry from the hidden framebuffer.
+  view.sk.beginUi(window, window.size)
+  view.drawGame()
+  for vertex in view.sk.drawer.layers[NormalLayer]: result.add vertex.pos
+  view.sk.endUi()
 # Box -> ordinary owned click replaces; Shift-click adds without toggling.
 let extra = world.planets.findIt(it.owner == 0)
 world.planets[extra].owner = 1
@@ -78,28 +91,57 @@ key(MouseLeft)
 window.handleButtonRelease(KeyLeftShift)
 doAssert view.controls.selected[source] and view.controls.selected[extra],
   "Shift-click adds and never toggles off"
-# A selected source retains the group during drag; release on a different
-# planet sends each source, whereas an ordinary release collapses to one.
-planet(source)
-window.state.doubleClickTime = 0
-window.handleButtonPress(MouseLeft)
-view.handleInput()
-window.state.perFrame = PerFrame()
-doAssert view.controls.selected[source] and view.controls.selected[extra]
-planet(target)
-let multiSource = world.planets[source].ships
-let multiExtra = world.planets[extra].ships
-view.handleInput()
-window.handleButtonRelease(MouseLeft)
-view.handleInput()
-window.state.perFrame = PerFrame()
-doAssert world.planets[source].ships < multiSource and
-  world.planets[extra].ships < multiExtra, "Left drag preserves multi-source send"
-doAssert view.controls.selected[source] and view.controls.selected[extra]
+# Every planet origin starts a box; left gestures never submit an order.
+let neutralOrigin = world.planets.findIt(it.owner == 0)
+doAssert neutralOrigin >= 0
+for origin in [source, target, neutralOrigin]:
+  for additive in [false, true]:
+    view.controls.clear()
+    view.controls.selected[extra] = true
+    let
+      prior = view.controls.selected
+      start = world.planets[origin]
+      finish = world.planets[if origin == source: target else: source]
+      hash = world.fingerprint()
+    if additive: window.handleButtonPress(KeyLeftShift)
+    planet(origin)
+    window.state.doubleClickTime = 0
+    window.handleButtonPress(MouseLeft)
+    view.handleInput()
+    window.state.perFrame = PerFrame()
+    doAssert view.controls.holding and view.controls.box and
+      not view.controls.ordering, "Left press always arms selection"
+    for i, p in world.planets:
+      doAssert view.controls.selected[i] == ((additive and prior[i]) or
+        (i == origin and p.owner == 1)), "Left click selects immediately"
+    let heldSelection = gameGeometry()
+    view.controls.holding = false
+    let idleSelection = gameGeometry()
+    view.controls.holding = true
+    doAssert heldSelection == idleSelection,
+      "Held left selection never draws an order line"
+    point(finish.x.toInt.int, finish.y.toInt.int)
+    view.handleInput()
+    window.handleButtonRelease(MouseLeft)
+    view.handleInput()
+    window.state.perFrame = PerFrame()
+    if additive: window.handleButtonRelease(KeyLeftShift)
+    doAssert world.fingerprint() == hash,
+      "Left drag to a planet never sends ships"
+    for i, p in world.planets:
+      doAssert view.controls.selected[i] == ((additive and prior[i]) or
+        (p.owner == 1 and
+        p.x.toInt.int in min(start.x.toInt.int, finish.x.toInt.int) ..
+          max(start.x.toInt.int, finish.x.toInt.int) and
+        p.y.toInt.int in min(start.y.toInt.int, finish.y.toInt.int) ..
+          max(start.y.toInt.int, finish.y.toInt.int))),
+        "Planet-origin box uses its full rectangle and Shift selection"
 planet(source)
 key(DoubleClick)
 doAssert view.controls.selected[source] and view.controls.selected[extra],
   "Double-click release preserves select-all"
+doAssert not view.controls.holding,
+  "Physical left release ends a double-click selection"
 planet(source)
 key(MouseLeft)
 doAssert view.controls.selected[source] and not view.controls.selected[extra]
@@ -112,16 +154,6 @@ view.handleInput()
 window.state.perFrame = PerFrame()
 doAssert world.fingerprint() == heldHash, "Right down previews without sending"
 doAssert view.controls.holding and not view.controls.box
-# Execute the real game drawing pass, measuring actual Silky triangle geometry.
-for i in 0 ..< world.planets.len: view.planetSprites[i] = "Planet"
-view.boardRevision = world.revision
-view.effects = Effects(seed: world.setup.seed)
-view.stat = 3
-proc gameGeometry(): seq[Vec2] =
-  view.sk.beginUi(window, window.size)
-  view.drawGame()
-  for vertex in view.sk.drawer.layers[NormalLayer]: result.add vertex.pos
-  view.sk.endUi()
 let preview = gameGeometry()
 view.controls.holding = false
 let idle = gameGeometry()
@@ -258,7 +290,7 @@ cancelHeld("Pause", proc() = view.transport.player.playing = false,
 cancelHeld("History", proc() = view.session.world = world.clone(),
   proc() = view.session.world = world)
 cancelHeld("Menu", proc() = view.screen = FrontScreen, proc() = view.screen = GameScreen)
-# Fleet drags remain armed outside every edge, including beyond the window.
+# Selection and order gestures survive every edge, including beyond the window.
 for button in [MouseLeft, MouseRight]:
   for edge in [(-2000, 200), (Width + 2000, 200), (320, -2000), (320, Height + 2000), (320, 460)]:
     for reenter in [false, true]:
@@ -273,10 +305,10 @@ for button in [MouseLeft, MouseRight]:
       let hash = world.fingerprint()
       point(edge[0], edge[1])
       view.handleInput()
-      doAssert view.controls.holding, "Fleet gesture survives outside pointer"
+      doAssert view.controls.holding, "Gesture survives outside pointer"
       doAssert world.fingerprint() == hash, "Leaving never sends"
       doAssert view.controls.x in 0 .. Width and view.controls.y in 0 .. Height,
-        "Fleet preview endpoint is clamped"
+        "Gesture endpoint is clamped"
       doAssert view.controls.hover == -1, "Outside pointer cannot target a clamped planet"
       if reenter:
         planet(target)
@@ -286,8 +318,9 @@ for button in [MouseLeft, MouseRight]:
       window.state.perFrame = PerFrame()
       doAssert not view.controls.holding and not view.controls.ordering,
         "Any release cleans up the gesture"
-      doAssert (world.fingerprint() != hash) == reenter,
-        "Only valid reentry release sends"
+      doAssert (world.fingerprint() != hash) ==
+        (button == MouseRight and reenter),
+        "Only right-button reentry release sends"
       let released = world.fingerprint()
       view.handleInput()
       doAssert world.fingerprint() == released, "Release sends once"
@@ -326,10 +359,26 @@ planet(target)
 let capturedBefore = world.planets[friendly].ships
 key(MouseRight)
 doAssert world.planets[friendly].ships == capturedBefore and not view.controls.selected[friendly]
-# Empty battlefield still clears; a right-click cannot leave a stale left drag.
+# Right-clicking empty space preserves selection and cancels a left gesture.
+planet(source)
+window.state.doubleClickTime = 0
+window.handleButtonPress(MouseLeft)
+view.handleInput()
+window.state.perFrame = PerFrame()
 point(1,200)
+view.handleInput()
+let emptySelection = view.controls.selected
+let emptyHash = world.fingerprint()
 key(MouseRight)
-doAssert not view.controls.selected.anyIt(it) and not view.controls.holding
+doAssert view.controls.selected == emptySelection and
+  world.fingerprint() == emptyHash and not view.controls.holding and
+  not view.controls.box and not view.controls.ordering,
+  "Empty right-click leaves selected sources available"
+window.handleButtonRelease(MouseLeft)
+view.handleInput()
+window.state.perFrame = PerFrame()
+doAssert view.controls.selected == emptySelection and
+  world.fingerprint() == emptyHash, "Canceled left release stays inert"
 planet(source)
 window.handleButtonPress(KeyLeftShift)
 key(MouseLeft)
@@ -367,7 +416,7 @@ window.handleButtonPress(MouseLeft)
 view.handleInput()
 window.state.perFrame = PerFrame()
 doAssert view.controls.selected[source] and not view.controls.selected[extra],
-  "Press outside selected group starts a new drag selection"
+  "Press outside selected group starts a new selection"
 window.handleButtonRelease(MouseLeft)
 view.handleInput()
 window.state.perFrame = PerFrame()

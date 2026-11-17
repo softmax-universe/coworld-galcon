@@ -17,9 +17,9 @@ const
   PlayerListRowHeight = 22.0'f
   TutorialTexts = [
     "you are the green player.\n" &
-      "click and hold on your planet,\n" &
-      "drag to a target, then release.\n\n" &
-      "click planets to select a group.\n" &
+      "left-click your planet to select.\n" &
+      "right-click a target to send ships.\n\n" &
+      "left-drag to select a group.\n" &
       "double-click yours to select all.\n\n" &
       "number keys or slider: attack size.",
     "try to take over the red enemy.\n\n" &
@@ -33,12 +33,12 @@ const
       "attacks and nearby enemies lower it.\n\n" &
     "tab shows player ship histories."
   ]
-  HelpText = "click planets to select a group.\n" &
+  HelpText = "left-click your planet to select.\n" &
     "double-click yours to select all.\n" &
-    "drag from any planet to a target.\n" &
-    "drag empty space to select a box.\n" &
+    "left-drag anywhere to select a box.\n" &
+    "shift-click or drag adds to selection.\n" &
     "right-click a target to send ships.\n" &
-    "right-click empty space to clear.\n\n" &
+    "left-click empty space to clear.\n\n" &
     "slider: choose 1-100% ships\n" &
     "1-9: 10-90%, 0: 100% ships\n" &
     "tab: player ship histories\n" &
@@ -644,7 +644,7 @@ proc drawGame(view: View) {.measure.} =
       sending += roundedRatio(planet.ships * view.controls.percent,
         FixedScale * 100).int
       view.ring(center, planet.radius.float32 + 4, selectionColor)
-      if view.controls.holding and not view.controls.box:
+      if view.controls.holding and view.controls.ordering:
         let target =
           if view.controls.hover >= 0:
             let p = world.planets[view.controls.hover]

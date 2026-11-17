@@ -99,7 +99,7 @@ proc main() =
       if not (condition):
         for c in clients:
           let v = c.view
-          echo "DIAG screen=",v.screen," page=",v.front.page," playing=",v.transport.player.playing," selectedPlayer=",v.controls.player," holding=",v.controls.holding," double=",v.controls.double
+          echo "DIAG screen=",v.screen," page=",v.front.page," playing=",v.transport.player.playing," selectedPlayer=",v.controls.player," holding=",v.controls.holding," ordering=",v.controls.ordering
           if v.session != nil: echo "DIAG live=",v.session.liveWorld.tick," shown=",v.session.world.tick," canCommand=",v.session.canCommand," human=",v.session.human," stocks=",v.session.liveWorld.planets.mapIt(it.shipCount)
           if v.front.connection != nil: echo "DIAG connected=",v.front.connection.client.connected," applied=",v.front.connection.client.applied," server=",v.front.connection.client.serverTick," packets=",v.front.connection.client.packets.len," outgoing=",v.front.connection.client.outgoing.len
       doAssert condition, "TIMEOUT " & label
@@ -242,18 +242,16 @@ proc main() =
       (v.presentation.boardOrigin + vec2(p.x.toFloat32+0.5'f,p.y.toFloat32+0.5'f)*v.presentation.boardScale)*v.sk.uiScale
     click(i,board(src))
     check("client " & $i & " real click selects owned planet",v.controls.selected[source])
-    # A deliberate second press after the OS double-click interval is a drag,
-    # not the separately supported select-all double-click gesture.
-    let settle = networkTime()+0.7
-    while networkTime()<settle: frames()
-    point(i,board(src)); frames()
-    button(i,MouseLeft,true)
+    # Right press previews the selected source without queuing a launch.
     point(i,board(w.planets[target])); frames()
-    check("client " & $i & " actual drag has selection and target",v.controls.holding and v.controls.hover == target)
+    button(i,MouseRight,true)
+    check("client " & $i & " right hold has selection and target",
+      v.controls.holding and v.controls.ordering and
+      v.controls.selected[source] and v.controls.hover == target)
     let beforeTick = w.tick
     let beforeHash = w.fingerprint()
     # Exercise handleInput before any pump: release may queue intent, never mutate.
-    v.window.release(MouseLeft)
+    v.window.release(MouseRight)
     v.handleInput()
     check("client " & $i & " order waits for relay authority", w.tick == beforeTick and w.fingerprint() == beforeHash)
     frames()

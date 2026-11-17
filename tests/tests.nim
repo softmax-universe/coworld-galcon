@@ -201,7 +201,7 @@ block:
   doAssert brain.failed
   doAssert brain.decisions == 0
 
-echo "Multiple selections, any-anchor dragging, and double-click select all"
+echo "Left selection, planet-origin boxes, and right-click orders"
 block:
   let world = newWorld(Setup(seed: 3, counts: @[1, 3, 1]))
   var
@@ -216,13 +216,44 @@ block:
     input.press(world, p.x.toInt.int, p.y.toInt.int, additive = true)
     discard input.release(world, p.x.toInt.int, p.y.toInt.int)
   doAssert input.selected[owned[0]] and input.selected[owned[1]]
-  let
-    anchor = world.planets[world.ownerPlanet(2)]
-    target = world.planets[^1]
-  input.press(world, anchor.x.toInt.int, anchor.y.toInt.int)
+  let target = world.planets[world.ownerPlanet(2)]
+  input.pressOrder(world, target.x.toInt.int, target.y.toInt.int)
   doAssert input.release(world, target.x.toInt.int, target.y.toInt.int) == 2
   doAssert world.planets[owned[0]].shipCount == 1
   doAssert world.planets[owned[1]].shipCount == 1
+  let selection = input.selected
+  input.pressOrder(world, 0, 0)
+  doAssert input.release(world, 0, 0) == 0
+  doAssert input.selected == selection
+
+  let before = world.fingerprint()
+  var submissions = 0
+  let submit: SubmitOrder = proc(player, source, target, percent: int,
+      human: bool): int =
+    inc submissions
+  for additive in [false, true]:
+    for i, anchor in world.planets:
+      input.clear()
+      input.selected[owned[0]] = true
+      input.selected[owned[1]] = true
+      let
+        previous = input.selected
+        destination = world.planets[(i + 1) mod world.planets.len]
+        x = anchor.x.toInt.int
+        y = anchor.y.toInt.int
+        endX = destination.x.toInt.int
+        endY = destination.y.toInt.int
+      input.press(world, x, y, additive = additive)
+      doAssert input.box and not input.ordering
+      doAssert input.release(world, endX, endY, submit) == 0
+      for j, planet in world.planets:
+        let inside = planet.owner == 1 and
+          planet.x.toInt.int in min(x, endX) .. max(x, endX) and
+          planet.y.toInt.int in min(y, endY) .. max(y, endY)
+        doAssert input.selected[j] == (inside or (additive and previous[j])),
+          "Left dragging from any planet only selects the rectangle"
+  doAssert submissions == 0 and world.fingerprint() == before,
+    "Left selection never sends local or network orders"
   let own = world.planets[owned[0]]
   input.press(world, own.x.toInt.int, own.y.toInt.int, double = true)
   discard input.release(world, own.x.toInt.int, own.y.toInt.int)
