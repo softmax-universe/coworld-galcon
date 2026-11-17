@@ -768,11 +768,11 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     if front.menuButton(sk, "", point, 360, height = 64,
       enabled = enabled and visible and hovered and (mine or empty)):
         front.ui.selectedSeat = i
-    sk.drawRect(point + vec2(12, 16), vec2(14, 32),
+    sk.drawRect(point + vec2(12, 20), vec2(24, 24),
       if empty: rgbx(95, 98, 103, 255) else: rgbx(color[0], color[1], color[2], 255))
     sk.lobbyLabel(label,
-      point + vec2(38, 0), 368, tint = if empty: LobbyMuted else: rgbx(240, 237, 225, 255))
-    sk.lobbyLabel(status, point + vec2(38, 28), 300,
+      point + vec2(48, 0), 300, tint = if empty: LobbyMuted else: rgbx(240, 237, 225, 255))
+    sk.lobbyLabel(status, point + vec2(48, 28), 300,
       tint = if online and not empty: readinessColor(status == "ready")
         else: LobbyMuted)
     if front.menuButton(sk, "-", point + vec2(370, 14), 38, height = 36,
