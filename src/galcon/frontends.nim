@@ -895,10 +895,25 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         front.ui.selectedSeat < 0 and front.contextSeat < 0 and
         not front.contextDismissed and emptyCount > 0
     var choice = "Fill"
-    sk.lobbyBotSelect(window, choice, LobbyBotNames,
-      front.ui.fillBotMenu, fill, 420, canFill)
     let selectorHeight = sk.atlas.fonts[sk.textStyle].lineHeight +
       sk.theme.padding.float32 * 2
+    if canFill:
+      sk.lobbyBotSelect(window, choice, LobbyBotNames,
+        front.ui.fillBotMenu, fill, 420)
+    else:
+      front.ui.fillBotMenu = LobbyBotMenu()
+      discard front.menuButton(sk, "", fill, 420,
+        enabled = false, height = selectorHeight)
+      let
+        arrowSize = sk.getImageSize("droparrow")
+        padding = sk.theme.padding.float32
+      sk.drawLabel(choice, fill + vec2(padding, 0),
+        vec2(420 - arrowSize.x - padding * 3, selectorHeight),
+        sk.theme.disabledTextColor, sk.textStyle)
+      sk.drawImage("droparrow", fill + vec2(
+        420 - arrowSize.x - padding,
+        (selectorHeight - arrowSize.y) / 2
+      ), sk.theme.disabledTextColor)
     front.menuHover(sk, rect(fill, vec2(420, selectorHeight)), canFill)
     if choice != "Fill" or (canFill and wasOpen != front.ui.fillBotMenu.open):
       front.emitUiCue(UiClick)
