@@ -346,28 +346,54 @@ proc drawMenu(view: View) =
     centered = true)
 
 proc drawShips(view: View) {.measure.} =
-  ## Draws the original hollow triangular ships with fixed simulation headings.
+  ## Draws hollow ships with a modest squeeze inside crowded streams.
   let world = view.session.world
   measurePush("ship_geometry")
   for i, body in world.bodies:
     if not body.active or body.kind != ShipBody:
       continue
     let
-      heading = math.arctan2(
-        (body.y - body.previousY).toFloat32,
-        (body.x - body.previousX).toFloat32
-      )
+      movementX = (body.x - body.previousX).toFloat32
+      movementY = (body.y - body.previousY).toFloat32
+      contacts = world.setup != nil and not world.setup.legacyMovement and
+        not world.setup.legacyFlocking and not world.setup.legacyContacts
       blend = if interpolateVisuals and view.transport.player.playing:
         clamp(view.transport.player.accumulator * TickRate, 0.0'f, 1.0'f)
         else: 1.0'f
+      heading =
+        if contacts:
+          let
+            previous = world.previousHullHeading[i].toFloat32
+            turn = body.heading.toFloat32 - previous
+          previous + math.arctan2(math.sin(turn), math.cos(turn)) * blend
+        elif movementX == 0 and movementY == 0:
+          body.heading.toFloat32
+        else:
+          math.arctan2(movementY, movementX)
       center = view.offset + vec2(
         body.previousX.toFloat32 + (body.x - body.previousX).toFloat32 * blend,
         body.previousY.toFloat32 + (body.y - body.previousY).toFloat32 * blend
       )
-      color = ownerColor(world.ships[i].owner)
-      a = center + vec2(math.cos(heading), math.sin(heading)) * 6
-      back = center - vec2(math.cos(heading), math.sin(heading)) * 3
-      side = vec2(-math.sin(heading), math.cos(heading)) * 3
+      tint = ownerColor(world.ships[i].owner)
+      color =
+        if body.escapeTicks > 0 and not world.setup.legacyDeadlocks:
+          rgbx(tint.r div 2, tint.g div 2, tint.b div 2, tint.a div 2)
+        else:
+          tint
+      pressure = clamp(
+        if contacts:
+          world.previousHullPressure[i].toFloat32 * (1 - blend) +
+            world.neighborPressure[i].toFloat32 * blend
+        else:
+          world.neighborPressure[i].toFloat32,
+        0.0'f, 1.0'f
+      )
+      forward = vec2(math.cos(heading), math.sin(heading)) *
+        (1.0'f - pressure * 0.1'f)
+      a = center + forward * 6
+      back = center - forward * 3
+      side = vec2(-math.sin(heading), math.cos(heading)) *
+        (3.0'f - pressure * 0.75'f)
       b = back + side
       c = back - side
     view.line(a, b, color)
@@ -987,8 +1013,12 @@ proc frame(view: View) =
     frameStart = epochTime()
   view.lastTime = now
   if view.musicSource != nil:
-    let volume = if view.front.preferences.soundMuted: 0.0'f
-      else: view.front.preferences.mainVolume.float32 / 100
+    let volume =
+      when compiles(view.front.preferences.soundMuted):
+        if view.front.preferences.soundMuted: 0.0'f
+        else: view.front.preferences.mainVolume.float32 / 100
+      else:
+        view.front.preferences.mainVolume.float32 / 100
     view.musicSource.gain = volume * view.front.preferences.musicVolume.float32 / 100
     for source in [view.launchSource, view.blastSource, view.captureSource]:
       source.gain = volume * view.front.preferences.fxVolume.float32 / 100

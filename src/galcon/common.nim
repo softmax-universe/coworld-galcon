@@ -75,6 +75,13 @@ type
     kind*: BodyKind
     x*, y*, previousX*, previousY*: Fixed
     targetX*, targetY*, radius*, speed*, heading*: Fixed
+    routeX*, routeY*: Fixed
+      ## Original route anchor lets displaced ships recover their ordered path.
+    routeReady*: bool
+    progressDistance*: Fixed
+      ## Last meaningful progress checkpoint for deterministic deadlock recovery.
+    stalledTicks*, escapeTicks*: int32
+    progressReady*: bool
     weight*: int32
     target*: int
   Planet* = ref object
@@ -119,6 +126,16 @@ type
       ## Fresh lobby MatchConfig enables it; zero/default and old tapes do not.
     legacyMovement*: bool
       ## Version 14 and older preserve hard friendly collisions and FIFO retries.
+    legacyFlocking*: bool
+      ## Version 15 and older preserve the original local alignment steering.
+    legacyContacts*: bool
+      ## Version 16 and older allow moving friendly ships to overlap.
+    legacyRouteSteering*: bool
+      ## Version 17 and older preserve collision-driven heading alignment.
+    legacyCrossings*: bool
+      ## Version 18 and older preserve symmetric crossing pressure.
+    legacyDeadlocks*: bool
+      ## Version 19 and older never phase stalled ships through traffic.
     legacyLaunches*: bool
       ## Old replay orders describe immediate spawns, not accepted intentions.
   World* = ref object
@@ -133,6 +150,18 @@ type
     spatialX*, spatialY*: array[MaxBodies, int32]
     neighborVX*, neighborVY*, neighborHeading*: array[MaxBodies, Fixed]
       ## Derived tick scratch, rebuilt from hashed previous/current positions.
+    routePriority*: array[MaxBodies, Fixed]
+      ## Derived resistance increases as ships are displaced from their route.
+    neighborPressure*: array[MaxBodies, Fixed]
+      ## Crowd density; contact movement also retains it for swept hull bounds.
+    hullX*, hullY*, hullRadius*: array[MaxBodies, Fixed]
+      ## Derived enclosing hull circles for the current steering orientation.
+    hullDX*, hullDY*: array[MaxBodies, Fixed]
+      ## Cached heading axes avoid repeated trigonometry during hull contacts.
+    previousHullHeading*, previousHullPressure*: array[MaxBodies, Fixed]
+      ## Previous render poses keep rotation and compression in step with motion.
+    previousHullX*, previousHullY*, previousHullRadius*: array[MaxBodies, Fixed]
+      ## Derived preceding circles bound interpolated movement between ticks.
     sorted*: array[MaxBodies, SpatialEntry]
     sortedCounts*: array[BodyKind, int]
     gridHeads*: array[MaxGridCells, uint16]

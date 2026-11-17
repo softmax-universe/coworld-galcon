@@ -15,6 +15,10 @@ proc traffic(): World =
       y: fixed((220 + (i mod 3) * 12).int32),
       targetX: fixed(if east: 580 else: 60), targetY: fixed(232),
       radius: fixed(ShipRadius), weight: 1, speed: FixedOne, target: -1)
+    let body = addr result.bodies[slot]
+    body.heading = arctan2(body.targetY - body.y, body.targetX - body.x)
+    body.previousX = body.x - cos(body.heading)
+    body.previousY = body.y - sin(body.heading)
     result.ships[slot] = Ship(owner: 1, target: target)
   result.activeShips = 24
 
@@ -42,7 +46,10 @@ proc testFlocking*() =
       v.bodies[11] = Body(active: true, kind: ShipBody, x: fixed(100), y: fixed(120),
         previousX: fixed(100) - (if moving: FixedOne else: FixedZero),
         previousY: fixed(120) - (if moving: FixedOne else: FixedZero),
-        targetX: fixed(500), targetY: fixed(400), radius: fixed(6), speed: FixedOne, weight: 1, target: -1)
+        targetX: fixed(500), targetY: fixed(400), radius: fixed(6),
+        heading: arctan2(FixedOne, FixedOne),
+        speed: if moving: FixedOne else: FixedZero,
+        weight: 1, target: -1)
       v.ships[11].owner = owner
       v.moveBodies(Grid16)
       v.bodies[10].y - fixed(100)

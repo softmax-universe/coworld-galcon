@@ -4,7 +4,7 @@ import
   common, worlds, profiles, chats
 
 const
-  ReplayVersion* = 15'u16
+  ReplayVersion* = 20'u16
   MaxTicks* = TickRate * 60 * 30
   MaxOrders* = 1_000_000
 
@@ -67,6 +67,21 @@ type
   FlockingRecordingData = object
     balanced: BalancedRecordingData
     legacyMovement: bool
+  FlowRecordingData = object
+    flocking: FlockingRecordingData
+    legacyFlocking: bool
+  ContactRecordingData = object
+    flow: FlowRecordingData
+    legacyContacts: bool
+  RouteRecordingData = object
+    contacts: ContactRecordingData
+    legacyRouteSteering: bool
+  CrossingRecordingData = object
+    routes: RouteRecordingData
+    legacyCrossings: bool
+  EscapeRecordingData = object
+    crossings: CrossingRecordingData
+    legacyDeadlocks: bool
   Recording* = ref object
     setup*: Setup
     orders*: seq[Order]
@@ -111,10 +126,30 @@ proc save*(recording: Recording, path: string) =
       chats: recording.chats,
       names: recording.names
     )
-    saveReplayFile(path, "galcon", ReplayVersion, FlockingRecordingData(balanced: BalancedRecordingData(
-      pending: PendingRecordingData(rules: data,
-        legacyLaunches: recording.setup.legacyLaunches),
-      balancedMap: recording.setup.balancedMap), legacyMovement: recording.setup.legacyMovement))
+    let flow = FlowRecordingData(
+      flocking: FlockingRecordingData(
+        balanced: BalancedRecordingData(
+          pending: PendingRecordingData(
+            rules: data, legacyLaunches: recording.setup.legacyLaunches
+          ),
+          balancedMap: recording.setup.balancedMap
+        ),
+        legacyMovement: recording.setup.legacyMovement
+      ),
+      legacyFlocking: recording.setup.legacyFlocking
+    )
+    saveReplayFile(path, "galcon", ReplayVersion, EscapeRecordingData(
+      crossings: CrossingRecordingData(
+        routes: RouteRecordingData(
+          contacts: ContactRecordingData(
+            flow: flow, legacyContacts: recording.setup.legacyContacts
+          ),
+          legacyRouteSteering: recording.setup.legacyRouteSteering
+        ),
+        legacyCrossings: recording.setup.legacyCrossings
+      ),
+      legacyDeadlocks: recording.setup.legacyDeadlocks
+    ))
   except IOError, OSError, ReplayError:
     raise newException(
       GalconError,
@@ -208,6 +243,11 @@ proc loadRecording*(path: string): Recording =
         legacyLaunches = header.gameVersion == 12
         balancedMap = false
         legacyMovement = true
+        legacyFlocking = true
+        legacyContacts = true
+        legacyRouteSteering = true
+        legacyCrossings = true
+        legacyDeadlocks = true
       if header.gameVersion == 12:
         data = decodeReplayFile("galcon", 12, bytes, RulesRecordingData)
       elif header.gameVersion == 13:
@@ -221,12 +261,74 @@ proc loadRecording*(path: string): Recording =
         data = current.pending.rules
         legacyLaunches = current.pending.legacyLaunches
         balancedMap = current.balancedMap
-      else:
-        let current = decodeReplayFile("galcon", ReplayVersion, bytes, FlockingRecordingData)
+      elif header.gameVersion == 15:
+        let current = decodeReplayFile(
+          "galcon", 15, bytes, FlockingRecordingData
+        )
         data = current.balanced.pending.rules
         legacyLaunches = current.balanced.pending.legacyLaunches
         balancedMap = current.balanced.balancedMap
         legacyMovement = current.legacyMovement
+      elif header.gameVersion == 16:
+        let current = decodeReplayFile(
+          "galcon", 16, bytes, FlowRecordingData
+        )
+        data = current.flocking.balanced.pending.rules
+        legacyLaunches = current.flocking.balanced.pending.legacyLaunches
+        balancedMap = current.flocking.balanced.balancedMap
+        legacyMovement = current.flocking.legacyMovement
+        legacyFlocking = current.legacyFlocking
+      elif header.gameVersion == 17:
+        let current = decodeReplayFile(
+          "galcon", 17, bytes, ContactRecordingData
+        )
+        data = current.flow.flocking.balanced.pending.rules
+        legacyLaunches = current.flow.flocking.balanced.pending.legacyLaunches
+        balancedMap = current.flow.flocking.balanced.balancedMap
+        legacyMovement = current.flow.flocking.legacyMovement
+        legacyFlocking = current.flow.legacyFlocking
+        legacyContacts = current.legacyContacts
+      elif header.gameVersion == 18:
+        let current = decodeReplayFile(
+          "galcon", 18, bytes, RouteRecordingData
+        )
+        let contacts = current.contacts
+        data = contacts.flow.flocking.balanced.pending.rules
+        legacyLaunches = contacts.flow.flocking.balanced.pending.legacyLaunches
+        balancedMap = contacts.flow.flocking.balanced.balancedMap
+        legacyMovement = contacts.flow.flocking.legacyMovement
+        legacyFlocking = contacts.flow.legacyFlocking
+        legacyContacts = contacts.legacyContacts
+        legacyRouteSteering = current.legacyRouteSteering
+      elif header.gameVersion == 19:
+        let current = decodeReplayFile(
+          "galcon", 19, bytes, CrossingRecordingData
+        )
+        let contacts = current.routes.contacts
+        data = contacts.flow.flocking.balanced.pending.rules
+        legacyLaunches = contacts.flow.flocking.balanced.pending.legacyLaunches
+        balancedMap = contacts.flow.flocking.balanced.balancedMap
+        legacyMovement = contacts.flow.flocking.legacyMovement
+        legacyFlocking = contacts.flow.legacyFlocking
+        legacyContacts = contacts.legacyContacts
+        legacyRouteSteering = current.routes.legacyRouteSteering
+        legacyCrossings = current.legacyCrossings
+      else:
+        let current = decodeReplayFile(
+          "galcon", ReplayVersion, bytes, EscapeRecordingData
+        )
+        let
+          crossings = current.crossings
+          contacts = crossings.routes.contacts
+        data = contacts.flow.flocking.balanced.pending.rules
+        legacyLaunches = contacts.flow.flocking.balanced.pending.legacyLaunches
+        balancedMap = contacts.flow.flocking.balanced.balancedMap
+        legacyMovement = contacts.flow.flocking.legacyMovement
+        legacyFlocking = contacts.flow.legacyFlocking
+        legacyContacts = contacts.legacyContacts
+        legacyRouteSteering = crossings.routes.legacyRouteSteering
+        legacyCrossings = crossings.legacyCrossings
+        legacyDeadlocks = current.legacyDeadlocks
       result.setup = Setup(
         seed: data.setup.seed,
         difficulty: data.setup.difficulty,
@@ -237,6 +339,11 @@ proc loadRecording*(path: string): Recording =
         legacyLaunches: legacyLaunches,
         balancedMap: balancedMap,
         legacyMovement: legacyMovement,
+        legacyFlocking: legacyFlocking,
+        legacyContacts: legacyContacts,
+        legacyRouteSteering: legacyRouteSteering,
+        legacyCrossings: legacyCrossings,
+        legacyDeadlocks: legacyDeadlocks,
         enemyShipsPassThrough: data.enemyShipsPassThrough,
         neutralsDontProduce: data.neutralsDontProduce,
         counts: data.setup.counts
@@ -247,6 +354,16 @@ proc loadRecording*(path: string): Recording =
       result.names = data.names
     if header.gameVersion < 15:
       result.setup.legacyMovement = true
+    if header.gameVersion < 16:
+      result.setup.legacyFlocking = true
+    if header.gameVersion < 17:
+      result.setup.legacyContacts = true
+    if header.gameVersion < 18:
+      result.setup.legacyRouteSteering = true
+    if header.gameVersion < 19:
+      result.setup.legacyCrossings = true
+    if header.gameVersion < 20:
+      result.setup.legacyDeadlocks = true
     if header.gameVersion < 13:
       result.setup.legacyLaunches = true
     if header.gameVersion < 7:

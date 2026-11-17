@@ -6,9 +6,13 @@ import
 
 export menus, connections
 
-const AppName* = "Galcon 2006"
+const
+  AppName* = "Galcon 2006"
+  DefaultLobbyPlayers = 4
 
 type
+  LobbyBot* = enum
+    ClassicBot, TruceBot
   Frontend* = ref object
     page*: MenuPage = HomeMenu
     preferences*: Preferences
@@ -32,6 +36,9 @@ type
     revision: uint32
     pendingConfig: string
     pendingJoin: bool
+    autoSeatRoom: string
+    autoSeatPending: bool
+    autoSeatClaim: int = -1
     autoConnect*: bool
     browserOpen: bool
     roomsRefreshArmed: bool
@@ -53,7 +60,8 @@ type
 
 proc newFrontend*(options: Options): Frontend =
   ## Loads saved settings and an independent, editable local match roster.
-  result = Frontend(config: MatchConfig(seed: options.game.seed,
+  result = Frontend(config: MatchConfig(players: DefaultLobbyPlayers,
+    seed: options.game.seed,
     difficulty: options.setup.difficulty), roomsScroll: FrameState(),
     rosterScroll: FrameState(), rng: initRand(2006))
   if options.playerCount > 2 or options.planetCount != 26:
@@ -134,6 +142,9 @@ proc connect*(front: Frontend) =
   front.prepared = nil
   front.revision = 0
   front.pendingConfig = ""
+  front.autoSeatRoom = ""
+  front.autoSeatPending = false
+  front.autoSeatClaim = -1
   front.error = ""
   front.networkPolicies = default(array[MaxPlayers, LocalPolicy])
 
@@ -148,23 +159,61 @@ proc leave*(front: Frontend) =
     front.localConfig = nil
   front.contextSeat = -1
   front.ui.selectedSeat = -1
+  front.ui.fillBotMenu = LobbyBotMenu()
   front.page = HomeMenu
   front.pendingConfig = ""
+  front.autoSeatRoom = ""
+  front.autoSeatPending = false
+  front.autoSeatClaim = -1
   front.revision = 0
 
 proc createRoom*(front: Frontend) =
   ## Defaults new online rooms independently of the local roster preference.
   let config = parseConfig(front.config.toJson())
-  config.players = 4
-  config.planets = max(4, config.planets)
+  config.players = DefaultLobbyPlayers
+  config.planets = max(DefaultLobbyPlayers, config.planets)
   config.validate()
   front.connection.client.send(RoomMessage(kind: CreateRoom,
-    name: (if front.roomName.len > 0: front.roomName else: front.preferences.name & "'s game"), number: 4, tickRate: TickRate.uint32,
+    name: (if front.roomName.len > 0: front.roomName else: front.preferences.name & "'s game"),
+    number: DefaultLobbyPlayers.uint32, tickRate: TickRate.uint32,
     flag: front.publicRoom, payload: config.toJson()))
 
 proc synchronizing*(front: Frontend): bool =
   ## Exposes the in-flight server roster acknowledgement to controls and tests.
-  front.pendingConfig.len > 0
+  front.pendingConfig.len > 0 or front.autoSeatPending
+
+proc claimJoiningSeat(front: Frontend) =
+  ## Claims an empty human seat once per room, retrying contested assignments.
+  let
+    client = front.connection.client
+    snapshot = client.snapshot
+  if front.autoSeatRoom != snapshot.room:
+    front.autoSeatRoom = snapshot.room
+    front.autoSeatPending = snapshot.phase == Lobby
+    front.autoSeatClaim = -1
+  if not front.autoSeatPending:
+    return
+  if snapshot.phase != Lobby or snapshot.humanSeat(client.participant) > 0:
+    front.autoSeatPending = false
+    front.autoSeatClaim = -1
+    return
+  if not client.connected or not client.welcomed:
+    # A disconnected transport drops its outbox; resend after reconnection.
+    front.autoSeatClaim = -1
+    return
+  if front.pendingConfig.len > 0:
+    return
+  if front.autoSeatClaim >= 0 and front.autoSeatClaim < snapshot.seats.len and
+    snapshot.seats[front.autoSeatClaim].owner == 0:
+      return
+  front.autoSeatClaim = -1
+  for i, seat in snapshot.seats:
+    if seat.owner == 0:
+      client.claimHuman(i)
+      front.autoSeatClaim = i
+      return
+  # Full lobbies remain watchable without replacing anyone's bot or human.
+  front.autoSeatPending = false
 
 proc resizeRoster*(front: Frontend, count: int) =
   ## Resizes the authoritative tail without removing another human's seat.
@@ -254,16 +303,22 @@ proc activateContext*(front: Frontend) =
     front.removePlayer(index)
   front.contextSeat = -1
 
-proc fillBots*(front: Frontend) =
+proc fillBots*(front: Frontend, bot = TruceBot) =
+  ## Fills only open seats with the chosen bundled policy.
   if not front.administer() or front.synchronizing(): reject("Only host can fill bots")
+  let policy =
+    case bot
+    of ClassicBot: LocalPolicy(name: "Classic Bot", bytes: BaselineSource)
+    of TruceBot: LocalPolicy(name: "Truce Bot", bytes: TruceSource)
   for i in 0 ..< front.config.players:
     if front.online:
       let client = front.connection.client
       if client.snapshot.seats[i].owner == 0:
-        front.networkPolicies[i] = LocalPolicy(name: "Truce Bot", bytes: TruceSource)
-        client.send(RoomMessage(kind: ClaimSeat, seat: i.uint32, name: "Truce Bot"))
+        front.networkPolicies[i] = policy
+        client.send(RoomMessage(kind: ClaimSeat, seat: i.uint32,
+          name: policy.name))
     elif front.localHuman != i + 1 and front.policies[i].bytes.len == 0:
-      front.policies[i] = LocalPolicy(name: "Truce Bot", bytes: TruceSource)
+      front.policies[i] = policy
 
 proc shuffleTeam*(front: Frontend) =
   if not front.administer() or front.synchronizing(): reject("Only host can shuffle")
@@ -337,7 +392,15 @@ proc syncLobby*(front: Frontend) =
   ## Prepares every occupied controller independently of social readiness.
   let client = front.connection.client
   if client.error.len > 0:
-    front.error = client.error
+    let claimRace = front.autoSeatPending and front.autoSeatClaim >= 0 and
+      (client.error == "Seat belongs to another participant" or
+        ((client.snapshot.phase != Lobby or
+          front.autoSeatClaim >= client.snapshot.seats.len) and
+          client.error == "Seats can only change in the lobby"))
+    if claimRace:
+      front.autoSeatClaim = -1
+    else:
+      front.error = client.error
     if front.pendingConfig.len > 0 and client.snapshot.payload.len > 0:
       front.config = parseConfig(client.snapshot.payload)
     front.pendingConfig = ""
@@ -347,8 +410,12 @@ proc syncLobby*(front: Frontend) =
     front.pendingJoin = false
   if client.snapshot.room.len == 0:
     front.pendingConfig = ""
+    front.autoSeatRoom = ""
+    front.autoSeatPending = false
+    front.autoSeatClaim = -1
     front.contextSeat = -1
     front.ui.selectedSeat = -1
+    front.ui.fillBotMenu = LobbyBotMenu()
     if front.localConfig != nil:
       front.config = front.localConfig
       front.localConfig = nil
@@ -375,28 +442,31 @@ proc syncLobby*(front: Frontend) =
     front.matchName = client.snapshot.name
     front.contextSeat = -1
     front.ui.selectedSeat = -1
+    front.ui.fillBotMenu = LobbyBotMenu()
     front.config = parseConfig(client.snapshot.payload)
     front.revision = client.snapshot.revision
     if front.prepared != nil and not front.prepared.started:
       front.prepared = nil
     if front.pendingConfig == client.snapshot.payload:
       front.pendingConfig = ""
-  if client.snapshot.phase == Lobby and front.prepared == nil:
-    var connected, ownsSeat: bool
-    for participant in client.snapshot.participants:
-      if participant.id == client.participant:
-        connected = participant.connected
-    for i, seat in client.snapshot.seats:
-      if seat.owner == client.participant:
-        ownsSeat = true
-    if connected and ownsSeat and front.readyAttempt != client.snapshot.revision:
-      front.readyAttempt = client.snapshot.revision
-      try:
-        front.prepared = prepareMatch(client, front.sources())
-        client.send(RoomMessage(kind: Prepared, revision: client.snapshot.revision,
-          hash: front.prepared.stateHash()))
-      except GalconError, RoomsError, PolicyError:
-        front.error = getCurrentExceptionMsg()
+  front.claimJoiningSeat()
+  if client.snapshot.phase == Lobby and front.prepared == nil and
+    not front.autoSeatPending:
+      var connected, ownsSeat: bool
+      for participant in client.snapshot.participants:
+        if participant.id == client.participant:
+          connected = participant.connected
+      for i, seat in client.snapshot.seats:
+        if seat.owner == client.participant:
+          ownsSeat = true
+      if connected and ownsSeat and front.readyAttempt != client.snapshot.revision:
+        front.readyAttempt = client.snapshot.revision
+        try:
+          front.prepared = prepareMatch(client, front.sources())
+          client.send(RoomMessage(kind: Prepared, revision: client.snapshot.revision,
+            hash: front.prepared.stateHash()))
+        except GalconError, RoomsError, PolicyError:
+          front.error = getCurrentExceptionMsg()
   if client.events.len > 0:
     let event = client.events[0]
     client.events.delete(0)
@@ -535,7 +605,10 @@ proc configPanel(front: Frontend, sk: Silky, window: Window,
           front.renameGame(front.matchName)
     else:
       sk.lobbyLabel(front.connection.client.snapshot.name, point + vec2(0, 48), 452, tint = LobbyMuted)
-  let content = point + vec2(0, if front.online: 48.0'f else: 0.0'f)
+  else:
+    sk.lobbyLabel(if front.roomName.len > 0: front.roomName else: "Local battle",
+      point + vec2(0, 48), 452)
+  let content = point + vec2(0, 48)
   if front.previewKey != before:
     front.preview = newWorld(front.config.matchOptions().setup)
     front.previewKey = before
@@ -566,16 +639,18 @@ proc configPanel(front: Frontend, sk: Silky, window: Window,
     checkBox "enemy fleets pass through", front.config.enemyShipsPassThrough
     sk.at = content + vec2(0, 526)
     checkBox "neutrals do not grow", front.config.neutralsDontProduce
-    sk.at = content + vec2(0, 570)
+    sk.at = content + vec2(0, 566)
     checkBox "Balanced Map", front.config.balancedMap
   else:
     sk.lobbyLabel("fleets pass through: " & $front.config.enemyShipsPassThrough,
       content + vec2(0, 478), 452)
     sk.lobbyLabel("neutrals don't grow: " & $front.config.neutralsDontProduce,
       content + vec2(0, 526), 452)
+    sk.lobbyLabel("Balanced Map: " & $front.config.balancedMap,
+      content + vec2(0, 566), 452)
   sk.lobbyLabel("neutral ships: " &
     (if front.config.neutralsDontProduce: "0-100" else: "classic"),
-    content + vec2(0, 576), 452, tint = LobbyMuted)
+    content + vec2(0, 606), 452, tint = LobbyMuted)
   let after = front.config.toJson()
   if enabled and front.online and after != before:
     front.pendingConfig = after
@@ -598,8 +673,9 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     snapshot = if online: client.snapshot else: RoomMessage()
     editable = not online or snapshot.phase == Lobby
     owner = not online or snapshot.participant == client.participant
-    modal = front.ui.selectedSeat >= 0 or front.contextSeat >= 0 or front.contextDismissed
-    enabled = editable and front.pendingConfig.len == 0 and not modal
+    modal = front.ui.selectedSeat >= 0 or front.contextSeat >= 0 or
+      front.contextDismissed or front.ui.fillBotMenu.open
+    enabled = editable and not front.synchronizing() and not modal
   sk.lobbyPanel(layout.left, vec2(930, layout.panelHeight))
   let at = layout.left + vec2(24)
   sk.lobbyLabel("players", at, 600, "LobbyHeading", MenuGreen)
@@ -666,8 +742,6 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     if sk.lobbyButton("remove last", fill + vec2(218, -52), 202,
       enabled = enabled and front.config.players > 2 and removable):
         front.resizeRoster(front.config.players - 1)
-    if sk.lobbyButton("fill with truce bots", fill, 420,
-      enabled = enabled and emptyCount > 0): front.fillBots()
     if sk.lobbyButton("shuffle team", fill + vec2(436, 0), 418,
       enabled = enabled): front.shuffleTeam()
   sk.lobbyLabel(if online: "Shuffles host-owned slots only; guests keep their seats."
@@ -700,7 +774,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
       else: sk.theme.disabledTextColor)
   if owner and sk.lobbyButton(if online and snapshot.phase in {Ended, Desynced}:
     "return to lobby" else: "start game", layout.primary, 250,
-    enabled = not modal and owner and front.pendingConfig.len == 0 and
+    enabled = not modal and owner and not front.synchronizing() and
       emptyCount < front.config.players, tint = rgbx(143, 255, 162, 255)):
       if online:
         client.send(RoomMessage(kind:
@@ -724,7 +798,8 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     sk.lobbyLabel("player actions", popup + vec2(12, 0), 256)
     if sk.lobbyButton(if (if online: front.contextKind == "Human" else: false):
       "kick player" else: "remove bot",
-      popup + vec2(12, 44), 256, enabled = canKick or canRemove):
+      popup + vec2(12, 44), 256, enabled = canKick or canRemove) and
+      front.contextArmed:
         front.activateContext()
     let inside = overlaps(window.mousePos.vec2 / sk.uiScale, rect(popup, vec2(280, 176)))
     if window.buttonPressed[MouseLeft]:
@@ -759,6 +834,23 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         elif front.localHuman == index + 1: front.localHuman = 0
         front.policies[index] = policy
       front.ui.selectedSeat = -1
+  if owner:
+    let
+      wasOpen = front.ui.fillBotMenu.open
+      canFill = editable and not front.synchronizing() and
+        front.ui.selectedSeat < 0 and front.contextSeat < 0 and
+        not front.contextDismissed and emptyCount > 0
+    var choice = "Fill"
+    sk.lobbyBotSelect(window, choice, ["Classic", "Truce"],
+      front.ui.fillBotMenu, fill, 420, canFill)
+    if choice != "Fill":
+      front.fillBots(if choice == "Classic": ClassicBot else: TruceBot)
+      front.ui.fillBotMenu = LobbyBotMenu()
+    elif wasOpen and not front.ui.fillBotMenu.open and
+      window.buttonPressed[MouseLeft]:
+        front.contextDismissed = true
+  else:
+    front.ui.fillBotMenu = LobbyBotMenu()
 
 proc localPercentSlider*(front: Frontend, sk: Silky, window: Window,
     id: int, value: var int, track: Rect, enabled = true) =
@@ -853,7 +945,10 @@ proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
     sk.lobbyLabel("0 fps = unlimited", p + vec2(0, 380), 860, tint = LobbyMuted)
   of 1:
     sk.at = p
-    checkBox "mute all sound", front.preferences.soundMuted
+    when compiles(front.preferences.soundMuted):
+      checkBox "mute all sound", front.preferences.soundMuted
+    else:
+      sk.lobbyLabel("Set main volume to 0 to mute", p, 860, tint = LobbyMuted)
     front.settingSlider(sk, window, 1, "main volume", front.preferences.mainVolume,
       p + vec2(0, 70), 0, 100)
     front.settingSlider(sk, window, 2, "music volume", front.preferences.musicVolume,
@@ -936,7 +1031,8 @@ proc identityUi*(front: Frontend, sk: Silky, window: Window): bool =
         front.savePlayerName(front.playerDraft)
     return
   if sk.playerButton(window, front.preferences.name,
-    not front.online or front.connection.client.snapshot.phase == Lobby):
+    not front.ui.fillBotMenu.open and not front.contextDismissed and
+      (not front.online or front.connection.client.snapshot.phase == Lobby)):
     front.playerDraft = front.preferences.name
     front.editingPlayer = true
     result = true
@@ -948,7 +1044,7 @@ proc draw*(front: Frontend, sk: Silky, window: Window) =
     of MultiplayerMenu: "multiplayer"
     else: "battle setup"
   let wasModal = front.ui.selectedSeat >= 0 or front.captureAction >= 0 or
-    front.contextSeat >= 0
+    front.contextSeat >= 0 or front.ui.fillBotMenu.open
   let layout = front.begin(sk, window, title)
   try:
     if front.identityUi(sk, window):

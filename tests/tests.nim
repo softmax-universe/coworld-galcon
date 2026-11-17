@@ -609,9 +609,22 @@ testPendingLaunches()
 testBalancedMaps()
 import test_flocking
 testFlocking()
+import test_flow_traffic
+testFlowTraffic()
+import test_ship_contacts
+testShipContacts()
+import test_flow_arrivals
+testFlowArrivals()
+import test_flow_routes
+testFlowRoutes()
+import test_deadlocks
+testDeadlocks()
+import test_flow_replays as _
 
 import test_lobby_relay as _
 when not defined(headless):
+  import test_auto_seats
+  testAutoSeats()
   import test_lobby_frontend as _
   import test_lobby_readiness as _
   import test_cosmetic_ready as _

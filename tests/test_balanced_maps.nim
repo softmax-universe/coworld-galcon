@@ -16,7 +16,7 @@ proc testConfig() =
   doAssert not configuredSetup(8, Easy, 4, 32).balancedMap
   doAssert not parseConfig("{\"players\":4,\"planets\":32}").balancedMap,
     "Legacy room payloads without the flag retain the old generator"
-  doAssert identity().gameplay == 15
+  doAssert identity().gameplay == ReplayVersion.uint32
   doAssert parseOptions(@["--balanced-map", "true"]).setup.balancedMap
   doAssert not parseOptions(@["--balanced-map", "false"]).setup.balancedMap
   for payload in ["{\"players\":4,\"planets\":32,\"balancedMap\":null}",
@@ -121,7 +121,7 @@ proc testReplay() =
       doAssert world.fingerprint() == peer.fingerprint()
     let path = Root / "build/balanced-roundtrip.replay"
     tape.save(path)
-    doAssert readFile(path).replayFileHeader().gameVersion == 15
+    doAssert readFile(path).replayFileHeader().gameVersion == ReplayVersion
     let loaded = loadRecording(path)
     doAssert loaded.setup.balancedMap == balanced, "Map mode survives replay serialization"
     doAssert loaded.hashes == tape.hashes

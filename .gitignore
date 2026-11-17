@@ -21,4 +21,5 @@ nimcache/
 build/
 tmp/
 *.replay
+!tests/fixtures/*.replay
 dist/

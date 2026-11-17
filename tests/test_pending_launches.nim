@@ -9,7 +9,8 @@ proc fixture(): World =
     p.ships = stock(100)
 
 proc testPendingLaunches*() =
-  doAssert ReplayVersion == 15, "Flocking and tick-batched launches are versioned"
+  doAssert ReplayVersion == 20,
+    "Deadlock recovery, crossing flow, and tick-batched launches are versioned"
   echo "Accepted 50% launches finish without another command"
   let world = fixture()
   let source = if world.planets[0].owner == 1: 0 else: 1

@@ -49,6 +49,7 @@ proc testLobbyLifecycle*() =
     name: "Lifecycle", participant: 1, revision: 1,
     tickRate: TickRate.uint32, payload: MatchConfig(players: 4).toJson(),
     seats: newSeq[Seat](4))
+  front.connection.client.snapshot.seats[0] = Seat(owner: 1, name: "Human")
   front.syncLobby()
   front.playerContext(1)
   front.contextSeat = -1

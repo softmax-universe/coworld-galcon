@@ -415,6 +415,9 @@ proc emitLaunch(world: World, player, source, target, amount: int, opening = -1)
       previousY: y,
       targetX: b.x,
       targetY: b.y,
+      routeX: a.x,
+      routeY: a.y,
+      routeReady: true,
       target: b.body,
       radius: fixed(ShipRadius),
       weight: 1,
@@ -655,6 +658,16 @@ proc fingerprint*(world: World): uint64 {.measure.} =
     mix(0x42414c414e434544'u64) # Opt-in only: old fingerprints are unchanged.
   if not world.setup.legacyMovement:
     mix(0x464c4f434b3135'u64)
+    if not world.setup.legacyFlocking:
+      mix(0x464c4f573136'u64)
+      if not world.setup.legacyContacts:
+        mix(0x434f4e5441435431'u64)
+        if not world.setup.legacyRouteSteering:
+          mix(0x524f5554453138'u64)
+          if not world.setup.legacyCrossings:
+            mix(0x43524f53533139'u64)
+            if not world.setup.legacyDeadlocks:
+              mix(0x4553434150453230'u64)
   mix(world.tick.uint64)
   mix(world.rng.state)
   mix(world.bodyCursor.uint64)
@@ -700,6 +713,19 @@ proc fingerprint*(world: World): uint64 {.measure.} =
       if body.kind == ShipBody:
         mix(world.ships[i].owner.uint64)
         mix(world.ships[i].target.uint64)
+        if not world.setup.legacyMovement and not world.setup.legacyFlocking and
+          not world.setup.legacyContacts:
+            mixFixed(world.neighborPressure[i])
+            if not world.setup.legacyRouteSteering:
+              mixFixed(body.routeX)
+              mixFixed(body.routeY)
+              mix(uint64(body.routeReady))
+              if not world.setup.legacyCrossings and
+                not world.setup.legacyDeadlocks:
+                  mixFixed(body.progressDistance)
+                  mix(body.stalledTicks.uint64)
+                  mix(body.escapeTicks.uint64)
+                  mix(uint64(body.progressReady))
   if world.pendingLaunchCount > 0:
     mix(0x4c41554e4348'u64)
     mix(world.pendingLaunchCount.uint64)
