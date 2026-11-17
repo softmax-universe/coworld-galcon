@@ -125,7 +125,7 @@ proc click(point: IVec2) =
   window.state.perFrame = PerFrame()
   window.handleButtonRelease(MouseLeft)
   front.draw(sk, window)
-click(ivec2(140, 690))
+click(ivec2(1440, 464))
 doAssert front.synchronizing()
 doAssert decode(front.connection.client.outgoing[^1]).kind == ResizeRoom
 let sent = front.connection.client.outgoing.len
@@ -150,7 +150,7 @@ window.state.mousePos = ivec2(220, 412)
 window.handleButtonRelease(MouseLeft)
 front.draw(sk, window)
 doAssert front.connection.client.outgoing.len == 0, "Release without fresh popup press must not act"
-click(ivec2(140, 690))
+click(ivec2(1440, 464))
 doAssert front.contextSeat == -1 and front.connection.client.outgoing.len == 0,
   "Outside click dismisses and blocks background through release"
 front.connection.client.snapshot.participant = 2
@@ -177,7 +177,7 @@ setConfig(AppName, "settings.json", saved)
 front.preferences.name = ""
 front.page = SingleMenu
 let beforeModal = front.config.players
-click(ivec2(140, 690))
+click(ivec2(1440, 464))
 doAssert front.config.players == beforeModal and front.needsPlayerName(),
   "First-run name prompt must block background roster controls"
 front.connection = nil

@@ -792,15 +792,6 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
   sk.popClipRect()
   let fill = layout.left + vec2(24, layout.panelHeight - 142)
   if owner:
-    if front.menuButton(sk, "add player", fill - vec2(0, 52), 200,
-      enabled = enabled and front.config.players < MaxPlayers):
-        front.resizeRoster(front.config.players + 1)
-    let last = front.config.players - 1
-    let removable = not online or (last < snapshot.seats.len and
-      snapshot.seats[last].owner in [0'u32, client.participant])
-    if front.menuButton(sk, "remove last", fill + vec2(218, -52), 202,
-      enabled = enabled and front.config.players > 2 and removable):
-        front.resizeRoster(front.config.players - 1)
     if front.menuButton(sk, "shuffle team", fill + vec2(436, 0), 418,
       enabled = enabled): front.shuffleTeam()
   sk.lobbyLabel(if online: "Shuffles host-owned slots only; guests keep their seats."
