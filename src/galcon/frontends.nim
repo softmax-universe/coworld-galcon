@@ -870,7 +870,12 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
       window.buttonPressed[KeyEscape]:
         front.contextSeat = -1
   if front.ui.selectedSeat >= 0:
-    if front.ui.selectedSeatBot.len == 0:
+    var knownBot = false
+    for policy in LobbyBotPolicies:
+      if policy.name == front.ui.selectedSeatBot:
+        knownBot = true
+        break
+    if not knownBot:
       front.ui.selectedSeatBot = LobbyBotPolicies[TruceBot].name
     let choice = sk.seatPicker(window, front.ui, LobbyBotPolicies)
     if choice.chosen:

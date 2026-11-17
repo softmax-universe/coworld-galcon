@@ -86,6 +86,16 @@ expectReadyPip(false, "config-reset")
 front.pendingConfig = "pending"
 expectReadyPip(false, "disabled-sync", disabled = true)
 front.pendingConfig = ""
+front.ui.selectedSeat = 1
+front.draw(sk, window)
+doAssert front.ui.selectedSeatBot == LobbyBotPolicies[TruceBot].name,
+  "A fresh slot picker must keep Truce as its default bot"
+for bot in LobbyBot:
+  front.ui.selectedSeatBot = LobbyBotPolicies[bot].name
+  front.draw(sk, window)
+  doAssert front.ui.selectedSeatBot == LobbyBotPolicies[bot].name,
+    "Reopening the slot picker must preserve a valid bot selection"
+front.ui.selectedSeat = -1
 front.connection.client.outgoing.setLen(0)
 window.state.mousePos = ivec2(120, 360)
 window.handleButtonPress(MouseRight)
