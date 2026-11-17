@@ -181,15 +181,36 @@ let second = world.planets[source].ships
 key(MouseRight)
 doAssert world.planets[source].ships < second, "Repeated right-click must send again"
 proc wheel(delta: float32) =
+  ## Delivers a native wheel delta through the production input handler.
   window.state.perFrame = PerFrame()
   # Windy's macOS public accessor scales the accumulated native delta by ten.
   window.state.perFrame.scrollDelta = vec2(0, delta / 10)
   if window.onScroll != nil: window.onScroll()
   view.handleInput()
   window.state.perFrame = PerFrame()
-for delta in [1.0'f, -2.0'f, 0.4'f, 20.0'f, -20.0'f]:
+let wheelWorldHash = world.fingerprint()
+let wheelSelection = view.controls.selected
+for (delta, expected) in [
+  (10.0'f, 60), (-20.0'f, 40), (0.6'f, 40), (0.6'f, 41),
+  (1000.0'f, 100), (0.6'f, 100), (-0.6'f, 100), (-0.6'f, 99),
+  (-1000.0'f, 1), (-0.6'f, 1), (0.6'f, 1), (0.6'f, 2)
+]:
   wheel(delta)
-  doAssert view.controls.percent == 50, "Wheel must never edit send percentage"
+  doAssert view.controls.percent == expected,
+    "Wheel edits percentage with fractional carry and bounded limits"
+doAssert world.fingerprint() == wheelWorldHash and
+  view.controls.selected == wheelSelection,
+  "Wheel edits remain local and preserve selected sources"
+key(Key5)
+wheel(-0.6)
+doAssert view.controls.percent == 50
+wheel(-0.6)
+doAssert view.controls.percent == 49, "Negative fractions accumulate too"
+doAssert wheelPercent(-100, 0) == 10 and wheelPercent(100, 0) == -10
+doAssert wheelPercent(-3, 1) == 10 and wheelPercent(3, 1) == -10
+doAssert wheelPercent(-1, 2) == 10 and wheelPercent(1, 2) == -10
+doAssert abs(wheelPercent(-4, 0) - 0.4'f) < 0.0001'f,
+  "Browser pixels, lines and pages preserve direction and smooth deltas"
 key(Key3)
 doAssert view.controls.percent == 30
 key(Key0)
@@ -208,6 +229,8 @@ proc sliderPoint(fraction: float32, y = 458.0'f) =
 let sliderWorldHash = world.fingerprint()
 let sliderSelection = view.controls.selected
 sliderPoint(0.36'f)
+wheel(10)
+doAssert view.controls.percent == 60, "Wheel also edits over the HUD slider"
 sliderFrame()
 window.state.doubleClickTime = 0
 window.handleButtonPress(MouseLeft)
@@ -220,6 +243,8 @@ sliderPoint(0.72'f)
 view.handleInput()
 sliderFrame()
 doAssert view.controls.percent == 72, "Held slider tracks the pointer immediately"
+wheel(-10)
+doAssert view.controls.percent == 72, "Dragging owns the slider over wheel input"
 sliderPoint(-4)
 view.handleInput()
 sliderFrame()
@@ -250,11 +275,12 @@ proc blocked(label: string, beforeInput, afterInput: proc(), localPercent = fals
   wheel(1)
   doAssert world.fingerprint() == hash, label & " blocks sends"
   doAssert view.controls.selected == selected, label & " preserves selection"
-  doAssert view.controls.percent == percent,
+  doAssert view.controls.percent == percent + (if localPercent: 1 else: 0),
     label & " percentage input ownership"
   afterInput()
 blocked("Chat", proc() = view.chatting = true, proc() = view.chatting = false)
 blocked("Statistics", proc() = view.card.shown = true, proc() = view.card.shown = false)
+blocked("Diagnostics", proc() = debugMenuOpen = true, proc() = debugMenuOpen = false)
 blocked("Pause", proc() = view.transport.player.playing = false, proc() = view.transport.player.playing = true, true)
 blocked("Seeking", proc() = view.transport.player.targetTick = 5, proc() = view.transport.player.targetTick = -1, true)
 blocked("History", proc() = view.session.world = world.clone(), proc() = view.session.world = world)
@@ -263,7 +289,19 @@ blocked("Spectator", proc() = view.session.human = 0, proc() = view.session.huma
 blocked("Finished", proc() = view.session.done = true, proc() = view.session.done = false)
 blocked("Menu", proc() = view.screen = FrontScreen, proc() = view.screen = GameScreen)
 blocked("Sidebar", proc() = point(-100, 200), proc() = discard)
-blocked("HUD", proc() = point(320, 460), proc() = discard)
+blocked("HUD", proc() = point(320, 460), proc() = discard, true)
+# A statistics toggle takes ownership before the same frame's wheel input.
+planet(target)
+key(Key5)
+window.handleButtonPress(KeyTab)
+window.state.perFrame.scrollDelta = vec2(0, 1.0'f)
+view.handleInput()
+doAssert view.card.shown and view.controls.percent == 50
+window.state.perFrame = PerFrame()
+window.handleButtonRelease(KeyTab)
+view.handleInput()
+window.state.perFrame = PerFrame()
+key(KeyTab)
 # Losing input ownership while held cancels permanently, even if it returns
 # before the physical release. Selection remains available for the next order.
 proc cancelHeld(label: string, interrupt, restore: proc()) =
@@ -324,7 +362,7 @@ for button in [MouseLeft, MouseRight]:
       let released = world.fingerprint()
       view.handleInput()
       doAssert world.fingerprint() == released, "Release sends once"
-# Wheel input remains inert even across a UI ownership boundary.
+# Fractional wheel input cannot leak across a UI ownership boundary.
 planet(target)
 key(Key5)
 wheel(0.6)
@@ -333,6 +371,14 @@ wheel(1)
 view.chatting = false
 wheel(0.6)
 doAssert view.controls.percent == 50, "Blocked input resets fractional wheel gesture"
+wheel(0.4)
+doAssert view.controls.percent == 51, "New wheel input accumulates after ownership returns"
+key(Key5)
+wheel(0.6)
+key(Key5)
+wheel(0.6)
+doAssert view.controls.percent == 50, "Numeric shortcuts reset fractional wheel input"
+key(Key5)
 # Target ownership does not affect routing; captured selections are cleaned.
 let friendly = world.planets.findIt(it.owner == 0)
 let neutral = world.planets.findIt(it.owner == 0 and it != world.planets[friendly])
@@ -523,6 +569,7 @@ window.handleButtonPress(MouseRight)
 view.handleInput()
 window.state.perFrame = PerFrame()
 let menuHash = world.fingerprint()
+let menuPercent = view.controls.percent
 key(KeyEscape)
 doAssert view.screen == GameScreen and not view.session.done,
   "Live Escape must not leave the game"
@@ -533,6 +580,7 @@ key(KeySpace)
 key(KeyTab)
 wheel(1)
 doAssert not view.chatting and not view.card.shown and view.transport.player.playing
+doAssert view.controls.percent == menuPercent, "Menu owns wheel input"
 window.handleButtonRelease(MouseRight)
 view.handleInput()
 window.state.perFrame = PerFrame()

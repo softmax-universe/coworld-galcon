@@ -279,7 +279,7 @@ proc main() =
     v.window.state.perFrame.scrollDelta = vec2(0, 0.2'f) # Windy macOS accessor *10.
     if v.window.onScroll != nil: v.window.onScroll()
     v.handleInput()
-    check("client " & $i & " wheel cannot edit percentage", v.controls.percent == 50)
+    check("client " & $i & " wheel edits local percentage", v.controls.percent == 52)
     v.window.state.perFrame = PerFrame()
     proc percentPointer(fraction: float32) =
       let p = (v.presentation.boardOrigin + vec2(320 + 300 * fraction, 458) *

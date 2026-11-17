@@ -21,7 +21,7 @@ const
       "right-click a target to send ships.\n\n" &
       "left-drag to select a group.\n" &
       "double-click yours to select all.\n\n" &
-      "number keys or slider: attack size.",
+      "wheel, slider or numbers: send %.",
     "try to take over the red enemy.\n\n" &
       "capture good neutral planets first.\n" &
       "big planets produce more ships.\n\n" &
@@ -39,7 +39,7 @@ const
     "shift-click or drag adds to selection.\n" &
     "right-click a target to send ships.\n" &
     "left-click empty space to clear.\n\n" &
-    "slider: choose 1-100% ships\n" &
+    "wheel or slider: choose 1-100% ships\n" &
     "1-9: 10-90%, 0: 100% ships\n" &
     "tab: player ship histories\n" &
     "space or f10: pause\n" &
@@ -86,6 +86,7 @@ type
     chatting: bool
     closing: bool
     chatInput: string
+    wheelRemainder: float32
     returnPending, returnSent: bool
     matchMenu: MatchMenu
     diagnosticsOwnInput: bool
@@ -781,14 +782,46 @@ proc drawSendSlider(view: View) =
   let at = view.presentation.boardOrigin + vec2(320, 444) * view.presentation.boardScale
   view.front.localPercentSlider(view.sk, view.window, 100,
     view.controls.percent, rect(at, vec2(300, 28) * view.presentation.boardScale), enabled)
+  if view.front.localPercentCaptured(100):
+    view.wheelRemainder = 0
 
-proc installPointerCapture(view: View) =
+proc wheelPercent(delta: float64, mode: int): float32 =
+  ## Converts browser pixels, lines or pages into percentage points.
+  (-delta * (case mode
+    of 1: 10.0 / 3.0
+    of 2: 10.0
+    else: 0.1)).float32
+
+proc scrollPercent(view: View): float32 =
+  ## Reads upward-positive wheel motion without changing shared UI scrolling.
+  when defined(emscripten):
+    var pixels: cdouble
+    {.emit: """
+    `pixels` = EM_ASM_DOUBLE({
+      var pixels = Module.galconWheelPixels || 0;
+      Module.galconWheelPixels = 0;
+      return pixels;
+    });
+    """.}
+    wheelPercent(pixels.float64, 0)
+  elif defined(linux):
+    -view.window.scrollDelta.y
+  else:
+    view.window.scrollDelta.y
+
+proc installPointerInput(view: View) =
+  ## Captures board drags and observes browser wheel units for send percentage.
   when defined(emscripten):
     # Game-local pointer capture preserves canvas-origin drags outside it.
-    # Shared Windy input and ordinary UI wheel scrolling remain untouched.
+    # Raw wheel units avoid Windy's platform-specific browser scale and sign.
     {.emit: """
     EM_ASM({
       var canvas = Module.canvas;
+      Module.galconWheelPixels = 0;
+      canvas.addEventListener('wheel', function(e) {
+        Module.galconWheelPixels += e.deltaY *
+          (e.deltaMode === 1 ? 100 / 3 : e.deltaMode === 2 ? 100 : 1);
+      }, {capture: true, passive: true});
       canvas.addEventListener('pointerdown', function(e) {
         if (e.pointerType === 'mouse') {
           try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
@@ -827,11 +860,16 @@ proc handleInput(view: View) =
       view.transport.player.playing and view.transport.player.targetTick < 0
     percentageInput = view.screen == GameScreen and not view.chatting and
       not view.card.shown and view.session != nil and view.session.human > 0 and
-      not view.session.inHistory and not view.session.done and commandPointer
+      not view.session.inHistory and not view.session.done and onBoard
     clicked = (if game: window.actionPressed(SelectInput)
       else: window.buttonPressed[MouseLeft]) and (not game or onBoard)
     entered = window.buttonPressed[KeyEnter]
     shift = window.actionDown(ShiftInput)
+    scroll = view.scrollPercent()
+  var percentageHandled = false
+  defer:
+    if not percentageHandled:
+      view.wheelRemainder = 0
 
   if game and view.matchMenu != HiddenMatchMenu:
     view.controls.cancelGesture()
@@ -950,12 +988,21 @@ proc handleInput(view: View) =
     if view.front.localPercentCaptured(100):
       view.controls.cancelGesture()
       return
-    if percentageInput:
+    if percentageInput and not view.card.shown and not view.session.inHistory:
       # This is a local UI preference, never an authoritative command.
+      percentageHandled = true
       let keys = [Key0, Key1, Key2, Key3, Key4, Key5, Key6, Key7, Key8, Key9]
       for i, key in keys:
         if window.buttonPressed[key]:
           view.controls.percent = if i == 0: 100 else: i * 10
+          view.wheelRemainder = 0
+      view.wheelRemainder += scroll
+      let change = view.wheelRemainder.int
+      view.wheelRemainder -= change.float32
+      view.controls.percent = clamp(view.controls.percent + change, 1, 100)
+      if (view.controls.percent == 1 and view.wheelRemainder < 0) or
+        (view.controls.percent == 100 and view.wheelRemainder > 0):
+          view.wheelRemainder = 0
     let boxTracking = view.controls.holding and view.controls.box and
       not view.controls.ordering
     let tracking = view.controls.holding
@@ -1030,6 +1077,9 @@ proc frame(view: View) =
   if inputHandled:
     view.layout()
     view.handleInput()
+  else:
+    discard view.scrollPercent()
+    view.wheelRemainder = 0
   try:
     view.front.pump()
     view.syncMatchScreen()
@@ -1241,7 +1291,7 @@ proc runGraphics*(options: Options) =
   # Invite/autoconnect startup must not open a socket before confirmation.
   view.initSounds()
   view.installChatInput()
-  view.installPointerCapture()
+  view.installPointerInput()
   if options.start:
     view.start(options.setup.tutorial)
   window.onButtonPress = proc(button: Button) =
