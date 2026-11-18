@@ -14,7 +14,7 @@ macro rematchLifecycle(): untyped =
   let settled = networkTime()+0.5
   while networkTime()<settled: frames()
   host.front.networkPolicies[0] = LocalPolicy(name: "Private rematch bot", bytes: privateSource)
-  host.front.connection.client.send(RoomMessage(kind: ClaimSeat, seat: 0, name: "Private rematch bot"))
+  host.front.connection.client.send(RoomMessage(kind: ClaimSeat, seat: 0, seatKind: BotSeat, name: "Private rematch bot"))
   awaitState("private bot joins sparse four-slot roster", guest.front.connection.client.snapshot.seats[0].owner == host.front.connection.client.participant)
   # The normal UI's minimum is one minute. Complete both games naturally at that
   # configured tick limit; never mutate a world, fabricate completion or Abort.

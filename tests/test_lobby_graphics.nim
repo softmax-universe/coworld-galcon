@@ -41,8 +41,10 @@ front.connection.client.snapshot = RoomMessage(kind: RoomState, room: "test",
   name: "Native input test", participant: 1, revision: 1, phase: Lobby,
   tickRate: TickRate.uint32, payload: front.config.toJson(),
   participants: @[Participant(id: 1, connected: true), Participant(id: 2, connected: true)],
-  seats: @[Seat(owner: 1, name: "Human"), Seat(owner: 1, name: "Truce Bot"),
-    Seat(owner: 2, name: "Human"), Seat(owner: 2, name: "Truce Bot")])
+  seats: @[Seat(owner: 1, name: "Human", kind: HumanSeat),
+    Seat(owner: 1, name: "Truce Bot", kind: BotSeat),
+    Seat(owner: 2, name: "Human", kind: HumanSeat),
+    Seat(owner: 2, name: "Truce Bot", kind: BotSeat)])
 front.preferences.name = "Native host"
 front.syncLobby()
 proc expectReadyPip(ready: bool, label: string, disabled = false) =

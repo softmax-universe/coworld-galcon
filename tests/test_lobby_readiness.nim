@@ -55,7 +55,7 @@ guest.connection.client.send(RoomMessage(kind: LeaveRoom))
 exchange()
 doAssert relay.guests[0].ready
 doAssert host.prepared != nil and host.prepared.revision == room.revision,
-  "Sparse roster must refresh retained readiness immediately"
+  "Sparse roster changes rebuild the local prepared world"
 guest.connection.client.send(RoomMessage(kind: JoinRoom, room: room.id))
 exchange()
 guest.connection.client.claimHuman(1)
@@ -66,7 +66,7 @@ doAssert guest.prepared != nil, "Rejoining human automatically prepares"
 host.resizeRoster(3)
 exchange()
 doAssert host.prepared != nil and host.prepared.revision == room.revision
-guest.connection.client.send(RoomMessage(kind: ClaimSeat, seat: 2,
+guest.connection.client.send(RoomMessage(kind: ClaimSeat, seat: 2, seatKind: BotSeat,
   name: "Truce Bot"))
 exchange()
 doAssert host.prepared != nil
@@ -78,10 +78,11 @@ host.resizeRoster(2)
 exchange()
 doAssert host.prepared != nil
 doAssert guest.prepared != nil
-host.connection.client.send(RoomMessage(kind: StartMatch))
+host.connection.client.send(RoomMessage(kind: StartMatch, revision: host.connection.client.snapshot.revision,
+    hash: host.connection.client.snapshot.setupHash()))
 exchange()
 doAssert room.phase == Playing
 doAssert host.prepared.started and guest.prepared.started
 doAssert host.prepared.stateHash() == guest.prepared.stateHash()
 doAssert host.prepared.stateHash() == initial
-echo "Actual relay and frontends separate social readiness from automatic revision consensus"
+echo "Relay startup separates cosmetic readiness from local game preparation"

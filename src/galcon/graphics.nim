@@ -359,10 +359,23 @@ proc menuAction(view: View) =
   else: discard
 
 proc syncMatchScreen(view: View) =
-  ## Only the relay's actual Lobby snapshot can leave network results.
+  ## Follows authoritative lobby returns and membership removal.
   if view.session != nil and view.session.networked and view.front.connection != nil:
     let snapshot = view.front.connection.client.snapshot
-    if snapshot.room.len > 0 and snapshot.phase == Lobby:
+    if snapshot.room.len == 0:
+      view.session.finish()
+      view.session = nil
+      view.front.prepared = nil
+      view.front.launch = nil
+      view.front.page = MultiplayerMenu
+      view.screen = FrontScreen
+      view.matchMenu = HiddenMatchMenu
+      view.chatting = false
+      view.chatInput.setLen(0)
+      view.controls.cancelGesture()
+      view.returnPending = false
+      view.returnSent = false
+    elif snapshot.phase == Lobby:
       view.front.page = LobbyMenu
       view.screen = FrontScreen
       view.returnPending = false
@@ -1142,6 +1155,9 @@ proc frame(view: View) =
   # backlog. The percentage is visible this frame without waiting for any tick.
   let inputHandled = view.screen == GameScreen
   if inputHandled:
+    if view.session.networked and view.controls.player != view.session.human:
+      view.controls.cancelGesture()
+      view.controls.player = view.session.human
     view.layout()
     view.handleInput()
   else:

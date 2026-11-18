@@ -4,8 +4,54 @@ import
   polyworld/[relays, rooms, roomclients],
   galcon/[common, multiplayer, worlds, sessions, options, replays, chats]
 
+proc testNetworkRecovery() =
+  ## Bot decisions resume once after catch-up without needing another tick.
+  let client = RoomClient(identity: identity(), participant: 1,
+    connected: true, welcomed: true,
+    snapshot: RoomMessage(kind: RoomState, room: "recovery", participant: 1,
+      revision: 1, tickRate: TickRate,
+      payload: MatchConfig(players: 2, planets: 6).toJson(),
+      participants: @[Participant(id: 1, name: "Host"),
+        Participant(id: 2, name: "Guest")],
+      seats: @[Seat(owner: 1, kind: BotSeat, name: "Counter"),
+        Seat(owner: 2, kind: HumanSeat, name: "Human")]))
+  let match = prepareMatch(client, @["counter = counter + 1\n", ""])
+  var begin = client.snapshot
+  begin.kind = BeginMatch
+  begin.match = 1
+  begin.phase = Playing
+  begin.hash = begin.setupHash()
+  client.snapshot.phase = Playing
+  client.accept(begin.encode())
+  match.start(begin)
+  doAssert client.catchingUp
+  doAssert match.session.brains[1].decisions == 0
+  match.resumeCommands()
+  doAssert match.session.brains[1].decisions == 0
+  client.accept(RoomMessage(kind: CaughtUp, match: 1).encode())
+  match.resumeCommands()
+  doAssert match.session.brains[1].decisions == 1
+  match.resumeCommands()
+  doAssert match.session.brains[1].decisions == 1
+  client.requestHistory()
+  client.accept(RoomMessage(kind: TickPacket, match: 1, tick: 1,
+    seats: begin.seats).encode())
+  var packet: RoomMessage
+  doAssert client.takeTick(packet)
+  match.applyPacket(packet)
+  doAssert client.catchingUp
+  doAssert match.session.brains[1].decisions == 1
+  client.accept(RoomMessage(kind: CaughtUp, match: 1,
+    tick: 1, number: 1).encode())
+  match.resumeCommands()
+  doAssert not client.catchingUp
+  doAssert match.session.brains[1].decisions == 2
+  match.resumeCommands()
+  doAssert match.session.brains[1].decisions == 2
+
 proc testMultiplayer*() =
   ## Exercises real binary relay traffic, distributed bots, reconnect, and replay.
+  testNetworkRecovery()
   proc assertRecordedChat(world: World, recording: Recording) =
     ## Scrubbing restores the visible ring from the complete recorded transcript.
     var expected: seq[ChatMessage]
@@ -65,6 +111,7 @@ proc testMultiplayer*() =
   for i in 0 ..< 16:
     let controller = if i mod 2 == 0: first else: second
     controller.send(RoomMessage(kind: ClaimSeat, seat: i.uint32,
+      seatKind: if i == 0: HumanSeat else: BotSeat,
       name: if i == 0: "Human" else: "Truce Bot"))
   exchange()
   for c in [first, second]:
@@ -74,13 +121,12 @@ proc testMultiplayer*() =
         sources[i] = TruceSource
     let match = prepareMatch(c, sources)
     matches.add match
-    c.send(RoomMessage(kind: Ready, revision: c.snapshot.revision,
-      hash: match.stateHash()))
   exchange()
   doAssert matches[0].stateHash() == matches[1].stateHash()
   doAssert matches[0].session.human == 1
   doAssert matches[1].session.human == 0
-  first.send(RoomMessage(kind: StartMatch))
+  first.send(RoomMessage(kind: StartMatch, revision: first.snapshot.revision,
+    hash: first.snapshot.setupHash()))
   exchange()
   for match in matches:
     match.start(match.client.events[0])
@@ -107,6 +153,30 @@ proc testMultiplayer*() =
   doAssert matches[0].queueOrder(1, humanSource, humanTarget, 50, true) == 50
   doAssert matches[0].stateHash() == before
   exchange()
+  # Commands already admitted remain authoritative when ownership changes
+  # before their tick arrives. The setup roster remains immutable for catch-up.
+  first.send(RoomMessage(kind: ClaimSeat, seat: 0,
+    participant: second.participant, seatKind: HumanSeat, name: "Human"))
+  exchange()
+  doAssert first.snapshot.seats[0].owner == second.participant
+  doAssert first.initialSnapshot.seats[0].owner == first.participant
+  doAssert second.initialSnapshot.seats[0].owner == first.participant
+  # Host changes can reach the relay before another peer's queued command.
+  # Normal command pumping must release every canceled submission.
+  for attempt in 1 .. 4:
+    doAssert matches[1].queueOrder(1, humanSource, humanTarget, 50, true) == 50
+    first.send(RoomMessage(kind: ReleaseSeat, seat: 0))
+    exchange()
+    doAssert second.rejectedCommands == attempt.uint64
+    matches[1].resumeCommands()
+    var rejected: RoomMessage
+    doAssert not second.takeRejected(rejected)
+    first.send(RoomMessage(kind: ClaimSeat, seat: 0,
+      participant: second.participant, seatKind: HumanSeat, name: "Human"))
+    exchange()
+  doAssert matches[1].queueOrder(1, humanSource, humanTarget, 50, false) == 50
+  exchange()
+  doAssert second.rejectedCommands == 4
   var spectatorAdded, disconnected, reconnected: bool
   for step in 0 ..< 1400:
     now += 1.0 / TickRate
@@ -139,6 +209,9 @@ proc testMultiplayer*() =
       matches[2].finished:
         break
   doAssert reconnected and spectatorAdded
+  doAssert matches[0].session.human == 0
+  doAssert matches[1].session.human == 1
+  doAssert matches[2].session.human == 0
   for match in matches:
     doAssert match.finished, "Match did not finish: " & $match.session.liveWorld.tick
     doAssert match.session.liveWorld.tick == 384
@@ -149,7 +222,7 @@ proc testMultiplayer*() =
       if order.player == 1:
         inc humanOrders
         doAssert order.count == 50
-    doAssert humanOrders == 1
+    doAssert humanOrders == 2
     for i in 0 ..< match.session.liveWorld.pendingLaunchCount:
       doAssert match.session.liveWorld.pendingLaunches[i].player != 1
     doAssert match.session.recording.chats == matches[0].session.recording.chats

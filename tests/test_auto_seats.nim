@@ -248,7 +248,8 @@ proc testPlayingSpectator() =
     client = host.connection.client
   host.createRoom()
   lobby.exchange()
-  client.send(RoomMessage(kind: StartMatch))
+  client.send(RoomMessage(kind: StartMatch, revision: client.snapshot.revision,
+    hash: client.snapshot.setupHash()))
   lobby.exchange()
   doAssert lobby.room().phase == Playing
   lobby.join(1)

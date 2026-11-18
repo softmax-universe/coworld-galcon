@@ -47,10 +47,9 @@ proc testSparseLobby*() =
     doAssert match.session.brains[1] == nil and match.session.brains[2] == nil
     doAssert match.session.names[1] == names[0] and match.session.names[2] == names[1]
     doAssert match.session.displayName(1) == names[0] and match.session.displayName(2) == names[1]
-    client.send(RoomMessage(kind: Ready, revision: client.snapshot.revision,
-      hash: match.stateHash()))
   exchange()
-  clients[0].send(RoomMessage(kind: StartMatch))
+  clients[0].send(RoomMessage(kind: StartMatch, revision: clients[0].snapshot.revision,
+    hash: clients[0].snapshot.setupHash()))
   exchange()
   for match in matches:
     doAssert match.client.began and match.client.snapshot.phase == Playing,

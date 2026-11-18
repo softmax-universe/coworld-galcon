@@ -32,6 +32,7 @@ type
     readyAttempt: uint32
     contextOwner: uint32
     contextRoom, contextKind: string
+    contextSeatKind: SeatKind
     contextPolicy: LocalPolicy
     contextArmed, contextDismissed: bool
     invite, search: string
@@ -279,7 +280,7 @@ proc claimJoiningSeat(front: Frontend) =
   front.autoSeatPending = false
 
 proc resizeRoster*(front: Frontend, count: int) =
-  ## Resizes the authoritative tail without removing another human's seat.
+  ## Publishes host-owned roster size and game settings as separate metadata.
   if count notin 2 .. MaxPlayers or front.synchronizing():
     reject("Wait for roster synchronization or choose 2-16 players")
   if front.online:
@@ -287,10 +288,6 @@ proc resizeRoster*(front: Frontend, count: int) =
     if client.snapshot.phase != Lobby or
       client.snapshot.participant != client.participant:
         reject("Only the lobby host can resize the roster")
-    for i in count ..< client.snapshot.seats.len:
-      let seat = client.snapshot.seats[i]
-      if seat.owner != 0 and seat.owner != client.participant:
-        reject("Remove or kick the last player before shrinking")
   front.config.players = count
   front.config.planets = max(front.config.planets, count)
   if front.online:
@@ -305,15 +302,15 @@ proc resizeRoster*(front: Frontend, count: int) =
       front.policies[i] = LocalPolicy()
 
 proc removePlayer*(front: Frontend, index: int) =
-  ## Clears exactly one bot or locally owned human, never its owner membership.
+  ## Releases one owned slot or any host-managed slot without kicking its owner.
   if front.synchronizing() or index notin 0 ..< front.config.players:
     reject("Player is unavailable while synchronizing")
   if front.online:
     let client = front.connection.client
     let seat = client.snapshot.seats[index]
-    if client.snapshot.phase != Lobby or (seat.owner != client.participant and
-      (client.snapshot.participant != client.participant or seat.name == "Human")):
-        reject("Only owners or the host can remove this bot")
+    if seat.owner != client.participant and
+      client.snapshot.participant != client.participant:
+        reject("Only the slot owner or host can remove this player")
     client.send(RoomMessage(kind: ReleaseSeat, seat: index.uint32))
     front.networkPolicies[index] = LocalPolicy()
   else:
@@ -336,8 +333,7 @@ proc canManagePlayer(front: Frontend, index: int): bool =
     return false
   let client = front.connection.client
   if not client.connected or not client.welcomed or
-    client.snapshot.room.len == 0 or client.snapshot.phase != Lobby or
-    index >= client.snapshot.seats.len:
+    client.snapshot.room.len == 0 or index >= client.snapshot.seats.len:
       return false
   let seat = client.snapshot.seats[index]
   seat.owner != 0 and (seat.owner == client.participant or
@@ -352,6 +348,7 @@ proc playerContext*(front: Frontend, index: int) =
     let seat = client.snapshot.seats[index]
     front.contextOwner = seat.owner
     front.contextKind = seat.name
+    front.contextSeatKind = seat.kind
     front.contextRoom = client.snapshot.room
   else:
     front.contextKind = if front.localHuman == index + 1: "Human" else: "Bot"
@@ -369,13 +366,14 @@ proc activateContext*(front: Frontend) =
     if client.snapshot.room != front.contextRoom or index >= client.snapshot.seats.len:
       reject("Room changed")
     let seat = client.snapshot.seats[index]
-    if seat.owner != front.contextOwner or seat.name != front.contextKind:
+    if seat.owner != front.contextOwner or seat.name != front.contextKind or
+      seat.kind != front.contextSeatKind:
       reject("Player changed")
     var present = false
     for participant in client.snapshot.participants:
-      if participant.id == seat.owner and participant.connected: present = true
+      if participant.id == seat.owner: present = true
     if not present: reject("Player left")
-    if seat.name == "Human" and seat.owner != client.participant:
+    if seat.kind == HumanSeat and seat.owner != client.participant:
       client.send(RoomMessage(kind: KickParticipant, participant: seat.owner))
     else:
       front.removePlayer(index)
@@ -396,7 +394,7 @@ proc fillBots*(front: Frontend, bot = TruceBot) =
       if client.snapshot.seats[i].owner == 0:
         front.networkPolicies[i] = policy
         client.send(RoomMessage(kind: ClaimSeat, seat: i.uint32,
-          name: policy.name))
+          seatKind: BotSeat, name: policy.name))
     elif front.localHuman != i + 1 and front.policies[i].bytes.len == 0:
       front.policies[i] = policy
 
@@ -416,7 +414,8 @@ proc shuffleTeam*(front: Frontend) =
     if front.online:
       front.networkPolicies[destination] = policies[source]
       front.connection.client.send(RoomMessage(kind: ClaimSeat, seat: destination.uint32,
-        name: front.connection.client.snapshot.seats[source].name))
+        name: front.connection.client.snapshot.seats[source].name,
+        seatKind: front.connection.client.snapshot.seats[source].kind))
     else:
       front.policies[destination] = policies[source]
       if source + 1 == human: front.localHuman = destination + 1
@@ -427,9 +426,8 @@ proc kickPlayer*(front: Frontend, index: int) =
   let client = front.connection.client
   if index notin 0 ..< client.snapshot.seats.len: reject("Unknown player")
   let seat = client.snapshot.seats[index]
-  if client.snapshot.phase != Lobby or
-    client.snapshot.participant != client.participant or
-    seat.name != "Human" or seat.owner in [0'u32, client.participant]:
+  if client.snapshot.participant != client.participant or
+    seat.kind != HumanSeat or seat.owner in [0'u32, client.participant]:
       reject("Only the host can kick another human participant")
   client.send(RoomMessage(kind: KickParticipant, participant: seat.owner))
 
@@ -469,14 +467,13 @@ proc pump*(front: Frontend) =
   front.refreshRooms(getMonoTime().ticks.float64 / 1_000_000_000)
 
 proc syncLobby*(front: Frontend) =
-  ## Prepares every occupied controller independently of social readiness.
+  ## Caches local setup and starts from the immutable shared initialization.
   let client = front.connection.client
   if client.error.len > 0:
     let claimRace = front.autoSeatPending and front.autoSeatClaim >= 0 and
       (client.error == "Seat belongs to another participant" or
-        ((client.snapshot.phase != Lobby or
-          front.autoSeatClaim >= client.snapshot.seats.len) and
-          client.error == "Seats can only change in the lobby"))
+        (front.autoSeatClaim >= client.snapshot.seats.len and
+          client.error == "Seat is outside this room"))
     if claimRace:
       front.autoSeatClaim = -1
     else:
@@ -543,8 +540,6 @@ proc syncLobby*(front: Frontend) =
         front.readyAttempt = client.snapshot.revision
         try:
           front.prepared = prepareMatch(client, front.sources())
-          client.send(RoomMessage(kind: Prepared, revision: client.snapshot.revision,
-            hash: front.prepared.stateHash()))
         except GalconError, RoomsError, PolicyError:
           front.error = getCurrentExceptionMsg()
   if client.events.len > 0:
@@ -554,6 +549,9 @@ proc syncLobby*(front: Frontend) =
       front.prepared = prepareMatch(client, front.sources())
     front.prepared.start(event)
     front.launch = front.prepared.session
+  if front.prepared != nil and front.prepared.started:
+    front.prepared.refreshControllers(front.sources())
+    front.prepared.resumeCommands()
 
 proc localMatch*(front: Frontend): Session =
   ## Starts the configured FFA with the exact visible roster.
@@ -773,7 +771,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
       empty = if online: seat.owner == 0
         else: front.localHuman != i + 1 and front.policies[i].bytes.len == 0
       mine = not online or seat.owner == client.participant
-      human = if online: seat.name == "Human" else: front.localHuman == i + 1
+      human = if online: seat.kind == HumanSeat else: front.localHuman == i + 1
       point = area.xy + vec2((i mod 2).float32 * 436,
         (i div 2).float32 * 74) - front.rosterScroll.scrollPos
       color = Colors[i + 1]
@@ -797,7 +795,7 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
           if human: label = participant.name
           status = if participant.ready: "ready" else: "not ready"
     if front.menuButton(sk, "", point, 418, height = 64,
-      enabled = enabled and visible and hovered and (mine or empty)):
+      enabled = enabled and visible and hovered and (owner or mine or empty)):
         front.ui.selectedSeat = i
     sk.drawRect(point + vec2(12, 20), vec2(24, 24),
       if empty: rgbx(95, 98, 103, 255) else: rgbx(color[0], color[1], color[2], 255))
@@ -844,8 +842,11 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     enabled = not modal and owner and not front.synchronizing() and
       emptyCount < front.config.players, tint = rgbx(143, 255, 162, 255)):
       if online:
-        client.send(RoomMessage(kind:
-          if snapshot.phase in {Ended, Desynced}: ReturnLobby else: StartMatch))
+        if snapshot.phase in {Ended, Desynced}:
+          client.send(RoomMessage(kind: ReturnLobby))
+        else:
+          client.send(RoomMessage(kind: StartMatch, revision: snapshot.revision,
+            hash: setupHash(snapshot)))
         if snapshot.phase in {Ended, Desynced}: front.prepared = nil
       else:
         front.launch = front.localMatch()
@@ -853,7 +854,8 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
     let index = front.contextSeat
     let valid = front.canManagePlayer(index)
     let seat = if online and valid: snapshot.seats[index] else: Seat()
-    let human = front.contextKind == "Human"
+    let human = if online: front.contextSeatKind == HumanSeat
+      else: front.contextKind == "Human"
     let action = if online and human and seat.owner != client.participant:
         "kick player"
       elif human: "leave slot"
@@ -899,7 +901,8 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         elif choice.clear: client.send(RoomMessage(kind: ReleaseSeat, seat: index.uint32))
         else:
           front.networkPolicies[index] = policy
-          client.send(RoomMessage(kind: ClaimSeat, seat: index.uint32, name: policy.name))
+          client.send(RoomMessage(kind: ClaimSeat, seat: index.uint32,
+            seatKind: BotSeat, name: policy.name))
       else:
         if choice.human: front.localHuman = index + 1
         elif front.localHuman == index + 1: front.localHuman = 0

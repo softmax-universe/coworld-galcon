@@ -43,7 +43,7 @@ proc main() =
           for seat in 0 ..< 16:
             if seat mod 2 == i:
               client.send(RoomMessage(kind: ClaimSeat, seat: seat.uint32,
-                name: "Truce Bot"))
+                seatKind: BotSeat, name: "Truce Bot"))
           claimed[i] = true
         var full = true
         for seat in client.snapshot.seats:
@@ -55,15 +55,17 @@ proc main() =
               if seat mod 2 == i: sources[seat] = TruceSource
             matches[i] = prepareMatch(client, sources)
             revisions[i] = client.snapshot.revision
-            client.send(RoomMessage(kind: Ready, revision: revisions[i],
-              hash: matches[i].stateHash()))
-        var ready = full
-        for participant in client.snapshot.participants:
-          ready = ready and participant.ready
-        if i == 0 and ready and not startRequested and matches[0] != nil:
-          client.send(RoomMessage(kind: StartMatch))
+        if i == 0 and full and not startRequested and matches[0] != nil:
+          client.send(RoomMessage(kind: StartMatch, revision: client.snapshot.revision,
+            hash: client.snapshot.setupHash()))
           startRequested = true
       for event in client.events:
+        if matches[i] == nil or matches[i].revision != event.revision:
+          var sources = newSeq[string](16)
+          for seat in 0 ..< 16:
+            if seat mod 2 == i:
+              sources[seat] = TruceSource
+          matches[i] = prepareMatch(client, sources)
         matches[i].start(event)
       client.events.setLen(0)
       if matches[i] != nil and matches[i].started:

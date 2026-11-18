@@ -26,7 +26,7 @@ proc record(direction: string, i: int, bytes: string) =
   var j = %*{"time": clock(), "direction": direction, "client": i,
     "kind": $m.kind, "bytes": bytes.len, "tick": m.tick,
     "commands": m.commands.len, "applied": clients[i].applied}
-  if m.kind in {ReportHash, FinishMatch, Ready, BeginMatch}: j["hash"] = %($m.hash)
+  if m.kind in {ReportHash, FinishMatch, StartMatch, BeginMatch}: j["hash"] = %($m.hash)
   log.writeLine($j)
 proc connectClient(index: int) =
   clients[index] = RoomClient(identity: identity(), name: "wire-" & $index)
@@ -60,6 +60,7 @@ while clock() < deadline:
         for seat in 0..<16:
           if seat mod 2 == i:
             c.send(RoomMessage(kind: ClaimSeat, seat: seat.uint32,
+              seatKind: if seat < 2: HumanSeat else: BotSeat,
               name: if seat < 2: "Human" else: "Idle"))
         claimed[i] = true
       var full = c.snapshot.seats.len == 16
@@ -70,13 +71,17 @@ while clock() < deadline:
           if seat mod 2 == i: sources[seat] = "end\n"
         matches[i] = prepareMatch(c, sources)
         revisions[i] = c.snapshot.revision
-        c.send(RoomMessage(kind: Ready, revision: revisions[i], hash: matches[i].stateHash()))
-      var ready = full
-      for p in c.snapshot.participants: ready = ready and p.ready
-      if i == 0 and ready and not started and matches[0] != nil:
-        c.send(RoomMessage(kind: StartMatch))
+      if i == 0 and full and not started and matches[0] != nil:
+        c.send(RoomMessage(kind: StartMatch, revision: c.snapshot.revision,
+          hash: c.snapshot.setupHash()))
         started = true
     for event in c.events:
+      if matches[i] == nil or matches[i].revision != event.revision:
+        var sources = newSeq[string](16)
+        for seat in 2 ..< 16:
+          if seat mod 2 == i:
+            sources[seat] = "end\n"
+        matches[i] = prepareMatch(c, sources)
       matches[i].start(event)
       if startTime == 0: startTime = clock()
     c.events.setLen(0)

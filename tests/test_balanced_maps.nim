@@ -14,8 +14,8 @@ proc testConfig() =
   doAssert not parseConfig(config.toJson()).balancedMap
   doAssert not config.matchOptions().setup.balancedMap
   doAssert not configuredSetup(8, Easy, 4, 32).balancedMap
-  doAssert not parseConfig("{\"players\":4,\"planets\":32}").balancedMap,
-    "Legacy room payloads without the flag retain the old generator"
+  doAssert parseConfig("{\"players\":4,\"planets\":32}").balancedMap,
+    "Room payloads use the current default when the map flag is omitted"
   doAssert identity().gameplay == ReplayVersion.uint32
   doAssert parseOptions(@["--balanced-map", "true"]).setup.balancedMap
   doAssert not parseOptions(@["--balanced-map", "false"]).setup.balancedMap

@@ -17,8 +17,10 @@ front.connection.client.snapshot = RoomMessage(kind: RoomState, room: "test",
   name: "Test", participant: 1, revision: 1, phase: Lobby,
   tickRate: TickRate.uint32, payload: MatchConfig(players: 4).toJson(),
   participants: @[Participant(id: 1, connected: true)],
-  seats: @[Seat(owner: 1, name: "Human"), Seat(owner: 1, name: "Truce Bot"),
-    Seat(owner: 2, name: "Human"), Seat(owner: 2, name: "Truce Bot")])
+  seats: @[Seat(owner: 1, name: "Human", kind: HumanSeat),
+    Seat(owner: 1, name: "Truce Bot", kind: BotSeat),
+    Seat(owner: 2, name: "Human", kind: HumanSeat),
+    Seat(owner: 2, name: "Truce Bot", kind: BotSeat)])
 front.syncLobby()
 front.resizeRoster(5)
 doAssert front.synchronizing()
@@ -52,7 +54,8 @@ proc testLobbyLifecycle*() =
     name: "Lifecycle", participant: 1, revision: 1,
     tickRate: TickRate.uint32, payload: MatchConfig(players: 4).toJson(),
     seats: newSeq[Seat](4))
-  front.connection.client.snapshot.seats[0] = Seat(owner: 1, name: "Human")
+  front.connection.client.snapshot.seats[0] =
+    Seat(owner: 1, name: "Human", kind: HumanSeat)
   front.syncLobby()
   front.playerContext(1)
   front.contextSeat = -1
@@ -88,9 +91,10 @@ for bot in LobbyBot:
       client: RoomClient(participant: 1, welcomed: true, connected: true)))
   online.connection.client.snapshot = RoomMessage(kind: RoomState,
     room: "bot-catalog", participant: 1, phase: Lobby,
-    seats: @[Seat(owner: 1, name: "Human"),
-      Seat(owner: 1, name: existing.name), Seat(owner: 2, name: "Human"),
-      Seat(owner: 2, name: "Guest Bot"), Seat(), Seat()])
+    seats: @[Seat(owner: 1, name: "Human", kind: HumanSeat),
+      Seat(owner: 1, name: existing.name, kind: BotSeat),
+      Seat(owner: 2, name: "Human", kind: HumanSeat),
+      Seat(owner: 2, name: "Guest Bot", kind: BotSeat), Seat(), Seat()])
   online.networkPolicies[1] = existing
   let occupied = online.networkPolicies
   online.fillBots(bot)
@@ -103,6 +107,7 @@ for bot in LobbyBot:
     let claim = decode(bytes)
     doAssert claim.kind == ClaimSeat and claim.seat == (i + 4).uint32
     doAssert claim.name == LobbyBotNames[bot] & " Bot"
+    doAssert claim.seatKind == BotSeat
     doAssert online.networkPolicies[i + 4].bytes == source
     doAssert online.networkPolicies[i + 4].name == claim.name
 

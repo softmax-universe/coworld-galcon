@@ -1,5 +1,5 @@
 import
-  std/[os, unicode, json],
+  std/[os, unicode],
   jsony,
   polyworld/[rooms, roomclients, policies],
   common, worlds, options, sessions, bots, chats, replays
@@ -7,7 +7,7 @@ import
 export rooms, roomclients
 
 const
-  NetworkProtocol* = 2'u32
+  NetworkProtocol* = 3'u32
   TruceSource* = staticRead(Root / "players/truce.bas")
 
 type
@@ -32,9 +32,11 @@ type
     decisionTick: int32 = -1
     playerSeats*: seq[int]
     seatPlayers*: seq[int]
+    sources: seq[string]
+    brainSources: seq[string]
 
 proc identity*(): GameIdentity =
-  ## Uses the same versioned identity envelope as GotA and LvD.
+  ## Identifies compatible Galcon clients through the shared room envelope.
   GameIdentity(game: "galcon", gameplay: ReplayVersion.uint32,
     protocol: NetworkProtocol)
 
@@ -49,9 +51,6 @@ proc parseConfig*(payload: string): MatchConfig =
   ## Parses only the game payload inside the shared room protocol.
   try:
     result = payload.fromJson(MatchConfig)
-    # Constructor defaults apply to fresh rooms, not historical payloads.
-    if result != nil and not payload.fromJson().hasKey("balancedMap"):
-      result.balancedMap = false
   except jsony.JsonError as error:
     raise newException(GalconError, "Invalid Galcon settings: " & error.msg)
   result.validate()
@@ -69,22 +68,22 @@ proc matchOptions*(config: MatchConfig): Options =
   result.setup = result.matchSetup(config.difficulty)
 
 proc humanSeat*(snapshot: RoomMessage, participant: uint32): int =
-  ## Finds a participant's only human slot, with zero reserved for spectators.
+  ## Selects the first assigned human slot, with zero reserved for spectators.
   for i, seat in snapshot.seats:
-    if participant != 0 and seat.owner == participant and seat.name == "Human":
-      if result != 0:
-        reject("Each participant may control only one human player")
-      result = i + 1
+    if participant != 0 and seat.owner == participant and seat.kind == HumanSeat:
+      return i + 1
 
 proc claimHuman*(client: RoomClient, index: int) =
-  ## Moves the local human without taking anyone else's seats.
+  ## Moves the local human; the host may also take an occupied slot.
   if index notin 0 ..< client.snapshot.seats.len or
-    client.snapshot.seats[index].owner notin [0'u32, client.participant]:
+    (client.snapshot.seats[index].owner notin [0'u32, client.participant] and
+      client.snapshot.participant != client.participant):
       reject("That slot belongs to another participant")
   for i, seat in client.snapshot.seats:
-    if i != index and seat.owner == client.participant and seat.name == "Human":
+    if i != index and seat.owner == client.participant and seat.kind == HumanSeat:
       client.send(RoomMessage(kind: ReleaseSeat, seat: i.uint32))
-  client.send(RoomMessage(kind: ClaimSeat, seat: index.uint32, name: "Human"))
+  client.send(RoomMessage(kind: ClaimSeat, seat: index.uint32,
+    seatKind: HumanSeat, name: "Human"))
 
 proc stateHash*(match: NetworkMatch): uint64 =
   ## Includes match duration and settings as well as fixed-point world state.
@@ -113,12 +112,19 @@ proc decodeSubmission(bytes: string): Submission =
   if reader.cursor != bytes.len:
     reject("Trailing Galcon command bytes")
 
+proc canSubmit(match: NetworkMatch): bool =
+  ## Only the connected live simulation may originate new player decisions.
+  match != nil and match.started and not match.finished and
+    match.client.connected and match.client.welcomed and
+    not match.client.catchingUp and match.client.snapshot.phase == Playing and
+    not match.client.snapshot.flag
+
 proc queueOrder*(
     match: NetworkMatch, player, source, target, value: int, percent: bool
 ): int =
   ## Queues intent without changing ships before the relay orders the command.
   let world = match.session.liveWorld
-  if match.finished or not match.started or player notin 1 .. world.setup.players or
+  if not match.canSubmit or player notin 1 .. world.setup.players or
     not world.validPlanet(source) or not world.validPlanet(target) or
     source == target or world.planets[source].owner != player or value <= 0:
       return
@@ -135,10 +141,10 @@ proc queueOrder*(
 proc prepareMatch*(client: RoomClient, sources: seq[string]): NetworkMatch =
   ## Compiles only locally owned policies; the server never receives bot code.
   let
-    snapshot = client.snapshot
+    snapshot = client.setupSnapshot()
     config = parseConfig(snapshot.payload)
   if client.identity != identity() or snapshot.tickRate != TickRate.uint32 or
-    snapshot.seats.len != config.players or sources.len != config.players:
+    snapshot.seats.len != config.players:
       reject("Galcon identity, tick rate, or roster differs from the room")
   var
     owned, names: seq[string]
@@ -147,28 +153,34 @@ proc prepareMatch*(client: RoomClient, sources: seq[string]): NetworkMatch =
     human = 0
   for i, seat in snapshot.seats:
     if seat.owner == 0: continue
-    discard snapshot.humanSeat(seat.owner)
     playerSeats.add i
     seatPlayers[i] = playerSeats.len
     names.add seat.name
     owned.add ""
-    if seat.name == "Human":
-      if seat.owner == client.participant: human = playerSeats.len
+    if seat.kind == HumanSeat:
+      if seat.owner == client.participant and human == 0:
+        human = playerSeats.len
       for participant in snapshot.participants:
         if participant.id == seat.owner:
           names[^1] = participant.name
     elif seat.owner == client.participant:
-      if sources[i].len == 0:
+      if i >= sources.len or sources[i].len == 0:
         reject("Choose a local policy for every bot you own")
       owned[^1] = loadPolicy(sources[i]).source
-  if playerSeats.len == 0: reject("Assign at least one player before readying")
+  if playerSeats.len == 0: reject("Assign at least one player before starting")
   let options = config.matchOptions()
   options.playerCount = playerSeats.len
   options.setup = options.matchSetup(config.difficulty)
   let session = newSession(options, owned, names, human, true)
   session.networked = true
   result = NetworkMatch(client: client, session: session,
-    revision: snapshot.revision, playerSeats: playerSeats, seatPlayers: seatPlayers)
+    revision: snapshot.revision, playerSeats: playerSeats,
+    seatPlayers: seatPlayers, sources: sources,
+    brainSources: newSeq[string](playerSeats.len))
+  for index, seatIndex in playerSeats:
+    if snapshot.seats[seatIndex].owner == client.participant and
+        snapshot.seats[seatIndex].kind == BotSeat:
+      result.brainSources[index] = sources[seatIndex]
   let current {.cursor.} = result
   result.submit = proc(player, source, target, value: int, percent: bool): int =
     ## Routes human and BASIC intent through exactly the same protocol.
@@ -178,7 +190,8 @@ proc prepareMatch*(client: RoomClient, sources: seq[string]): NetworkMatch =
       brain.submit = result.submit
   session.chat.submit = proc(sender, target: int, text: string): int32 =
     ## Keeps anonymous global chat deterministic on every participant.
-    if not current.started or current.finished or target != -2 or
+    if not current.canSubmit or sender notin 1 .. current.playerSeats.len or
+      target != -2 or
       text.len == 0 or text.len > MaxChatBytes - 16 or validateUtf8(text) >= 0:
         return 0
     var bytes: string
@@ -187,20 +200,62 @@ proc prepareMatch*(client: RoomClient, sources: seq[string]): NetworkMatch =
     if current.client.submit(current.playerSeats[sender - 1].uint32, bytes):
       return 1
 
+proc refreshControllers*(match: NetworkMatch, sources: seq[string]) =
+  ## Changes local control without rebuilding the immutable initial world.
+  match.sources = sources
+  let
+    client = match.client
+    roster = if client.began: client.appliedSeats
+      else: client.setupSnapshot().seats
+    session = match.session
+  session.human = 0
+  for index, seatIndex in match.playerSeats:
+    let player = index + 1
+    if seatIndex >= roster.len or roster[seatIndex].owner != client.participant:
+      session.brains[player] = nil
+      match.brainSources[index] = ""
+      continue
+    let seat = roster[seatIndex]
+    if seat.kind == HumanSeat:
+      if session.human == 0:
+        session.human = player
+      session.brains[player] = nil
+      match.brainSources[index] = ""
+    else:
+      let source = if seatIndex < sources.len: sources[seatIndex] else: ""
+      if source.len == 0:
+        session.brains[player] = nil
+        match.brainSources[index] = ""
+      else:
+        if session.brains[player] == nil or match.brainSources[index] != source:
+          let policy = loadPolicy(source).source
+          session.brains[player] = newBrain(session.liveWorld, player, policy,
+            session.chat)
+          session.brains[player].submit = match.submit
+          match.brainSources[index] = source
+
 proc decide(match: NetworkMatch) =
-  ## Runs each local VM once per applied tick, including reconnect catch-up.
+  ## Runs only the locally owned bots for the applied roster revision.
   let session = match.session
-  if match.finished or match.decisionTick == session.liveWorld.tick:
+  if not match.canSubmit or match.decisionTick == session.liveWorld.tick:
     return
+  match.refreshControllers(match.sources)
   match.decisionTick = session.liveWorld.tick
   for owner in countdown(session.liveWorld.setup.players, 1):
     session.brains[owner].decide()
 
+proc resumeCommands*(match: NetworkMatch) =
+  ## Resumes at the caught-up edge even when no further tick has arrived.
+  var rejected: RoomMessage
+  while match.client.takeRejected(rejected):
+    discard
+  match.decide()
+
 proc start*(match: NetworkMatch, event: RoomMessage) =
-  ## Checks the prepared roster revision and initial consensus hash.
+  ## Checks shared setup identity before reporting independent simulation state.
   if match.started or event.kind != BeginMatch or
     event.match != match.client.match or event.revision != match.revision or
-    event.hash != match.stateHash():
+    event.hash != setupHash(match.client.setupSnapshot()):
       reject("Galcon setup changed or initial state disagrees")
   match.started = true
   match.client.send(RoomMessage(kind: ReportHash, match: match.client.match,
@@ -217,10 +272,10 @@ proc applyPacket*(match: NetworkMatch, packet: RoomMessage) =
     packet.match != client.match or packet.tick != uint32(world.tick + 1):
       reject("Unexpected Galcon simulation tick")
   for command in packet.commands:
-    if command.participant == 0 or command.seat >= client.snapshot.seats.len.uint32 or
-      client.snapshot.seats[command.seat].owner != command.participant or
+    if command.participant == 0 or
+      command.seat >= match.seatPlayers.len.uint32 or
       match.seatPlayers[command.seat] == 0:
-        reject("Command participant does not own this player")
+        reject("Command slot has no initialized Galcon player")
     discard decodeSubmission(command.payload)
   for command in packet.commands:
     let

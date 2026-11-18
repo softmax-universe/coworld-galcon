@@ -57,14 +57,17 @@ exchange()
 let originalRoom=host.front.connection.client.snapshot.room
 guest.front.connection.client.send(RoomMessage(kind:JoinRoom,room:originalRoom))
 exchange()
-host.front.connection.client.claimHuman(1)
 guest.front.connection.client.claimHuman(3)
+exchange()
+host.front.connection.client.claimHuman(1)
 exchange()
 for round in 1..2:
   for v in views:
     doAssert v.front.prepared != nil and not v.front.prepared.started
     doAssert v.front.prepared.session.liveWorld.tick == 0
-  host.front.connection.client.send(RoomMessage(kind:StartMatch))
+  host.front.connection.client.send(RoomMessage(kind: StartMatch,
+    revision: host.front.connection.client.snapshot.revision,
+    hash: host.front.connection.client.snapshot.setupHash()))
   exchange()
   for v in views:
     v.session=v.front.prepared.session
@@ -128,3 +131,32 @@ for round in 1..2:
   echo "RESULT round=",round," clients=2 ticks=48 delayed-peer hashes agree same room"
 
 echo "Persistent result input and same-room two-client rematch passed (native, not browser)"
+
+# A socket interruption retains the live game; an authoritative kick removes it.
+host.front.connection.client.send(RoomMessage(kind: StartMatch,
+  revision: host.front.connection.client.snapshot.revision,
+  hash: host.front.connection.client.snapshot.setupHash()))
+exchange()
+for view in views:
+  view.session = view.front.prepared.session
+  view.front.launch = nil
+  view.screen = GameScreen
+let retained = guest.session
+relay.disconnect(2)
+guest.front.connection.client.lost()
+guest.syncMatchScreen()
+doAssert guest.session == retained and guest.screen == GameScreen,
+  "Transport loss must retain the session for reconnect"
+guest.front.connection.client.opened()
+exchange()
+host.front.connection.client.send(RoomMessage(kind: KickParticipant,
+  participant: guest.front.connection.client.participant))
+exchange()
+guest.chatting = true
+guest.chatInput = "unfinished message"
+guest.syncMatchScreen()
+doAssert guest.session == nil and guest.front.prepared == nil
+doAssert guest.front.launch == nil
+doAssert guest.screen == FrontScreen and guest.front.page == MultiplayerMenu
+doAssert not guest.chatting and guest.chatInput.len == 0
+echo "Live kick clears the match view while connection loss preserves it"

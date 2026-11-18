@@ -66,19 +66,19 @@ for flag in [true, false, true, false]:
   doAssert host.connection.client.snapshot.participants[0].ready == flag
   doAssert room.revision == revision and host.prepared == prepared,
     "Cosmetic toggles must not rebuild preparation or change revision"
-guest.connection.client.send(RoomMessage(kind: StartMatch))
+guest.connection.client.send(RoomMessage(kind: StartMatch,
+  revision: guest.connection.client.snapshot.revision,
+  hash: guest.connection.client.snapshot.setupHash()))
 exchange()
 doAssert room.phase == Lobby and guest.error.len > 0
-# Missing locally owned bot sources are visible and cannot start.
+# Missing locally owned bot sources are a game-side validation error.
 host.resizeRoster(3)
 exchange()
-guest.connection.client.send(RoomMessage(kind: ClaimSeat, seat: 2, name: "Missing bot"))
+guest.connection.client.send(RoomMessage(kind: ClaimSeat, seat: 2, seatKind: BotSeat, name: "Missing bot"))
 exchange()
 doAssert guest.prepared == nil and guest.error.len > 0
-host.connection.client.send(RoomMessage(kind: StartMatch))
-exchange()
-doAssert room.phase == Lobby
-# Removing it invalidates the pending start; settings also require fresh hashes.
+# The relay has no bot-source or preparation gate. Fix the game-side setup
+# before asking its clients to construct the match.
 guest.connection.client.send(RoomMessage(kind: ReleaseSeat, seat: 2))
 exchange()
 doAssert room.phase == Lobby
@@ -89,10 +89,12 @@ exchange()
 doAssert host.prepared.revision == room.revision
 # Fresh deterministic state agrees after non-roster settings changes.
 doAssert host.prepared.stateHash() == guest.prepared.stateHash()
-# Force a new revision immediately before Start to race automatic preparation.
+# A roster edit is acknowledged before hashing its authoritative setup.
 host.resizeRoster(4)
-# Start races the guest's first automatic preparation on purpose.
-host.connection.client.send(RoomMessage(kind: StartMatch))
+exchange()
+host.connection.client.send(RoomMessage(kind: StartMatch,
+  revision: host.connection.client.snapshot.revision,
+  hash: host.connection.client.snapshot.setupHash()))
 exchange()
 doAssert room.phase == Playing, "Host Start must prepare and launch without social Ready"
 for front in fronts:

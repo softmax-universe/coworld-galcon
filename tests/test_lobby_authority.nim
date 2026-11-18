@@ -7,12 +7,14 @@ let front = Frontend(config: MatchConfig(players: 4), online: true,
     connected: true, welcomed: true)))
 let client = front.connection.client
 client.snapshot = RoomMessage(room: "authority", participant: 1, phase: Lobby,
-  seats: @[Seat(owner: 1, name: "Human"), Seat(owner: 2, name: "Human"),
-    Seat(owner: 2, name: "Truce Bot"), Seat()],
+  seats: @[Seat(owner: 1, name: "Human", kind: HumanSeat),
+    Seat(owner: 2, name: "Human", kind: HumanSeat),
+    Seat(owner: 2, name: "Truce Bot", kind: BotSeat),
+    Seat()],
   participants: @[Participant(id: 1, connected: true), Participant(id: 2, connected: true)])
 front.playerContext(2)
 doAssert front.contextSeat == 2
-client.snapshot.seats[2] = Seat(owner: 3, name: "Truce Bot")
+client.snapshot.seats[2] = Seat(owner: 3, name: "Truce Bot", kind: BotSeat)
 var rejected = false
 try: front.activateContext()
 except RoomsError: rejected = true
@@ -59,8 +61,10 @@ for participant in [1'u32, 2'u32]:
           connected: true, welcomed: true)))
     let peer = lobby.connection.client
     peer.snapshot = RoomMessage(room: "permissions", participant: 1, phase: Lobby,
-      seats: @[Seat(owner: 1, name: "Human"), Seat(owner: 1, name: "Classic Bot"),
-        Seat(owner: 2, name: "Human"), Seat(owner: 2, name: "Truce Bot"), Seat()],
+      seats: @[Seat(owner: 1, name: "Human", kind: HumanSeat),
+        Seat(owner: 1, name: "Classic Bot", kind: BotSeat),
+        Seat(owner: 2, name: "Human", kind: HumanSeat),
+        Seat(owner: 2, name: "Truce Bot", kind: BotSeat), Seat()],
       participants: @[Participant(id: 1, connected: true),
         Participant(id: 2, connected: true)])
     let allowed = index < 4 and (participant == 1 or index in [2, 3])
@@ -80,6 +84,49 @@ for participant in [1'u32, 2'u32]:
         "Own humans leave their slot; owned and host-moderated bots are removed"
     doAssert peer.snapshot.seats[index].owner != 0,
       "Context actions await the server before changing the roster"
+
+for phase in [Lobby, Playing]:
+  for kind in [HumanSeat, BotSeat]:
+    let lobby = Frontend(config: MatchConfig(players: 2), online: true,
+      connection: Connection(stats: NetworkStats(),
+        client: RoomClient(participant: 1, connected: true, welcomed: true)))
+    let peer = lobby.connection.client
+    peer.snapshot = RoomMessage(room: "disconnected-owner", participant: 1,
+      phase: phase, seats: @[
+        Seat(owner: 1, name: "Host", kind: HumanSeat),
+        Seat(owner: 2, name: "Retained slot", kind: kind)],
+      participants: @[Participant(id: 1, connected: true),
+        Participant(id: 2, connected: false)])
+    lobby.playerContext(1)
+    doAssert lobby.contextSeat == 1
+    lobby.activateContext()
+    doAssert peer.outgoing.len == 1 and lobby.contextSeat == -1
+    let action = decode(peer.outgoing[0])
+    if kind == HumanSeat:
+      doAssert action.kind == KickParticipant and action.participant == 2
+    else:
+      doAssert action.kind == ReleaseSeat and action.seat == 1
+    doAssert peer.snapshot.seats[1].owner == 2,
+      "Disconnected controllers retain slots until authoritative removal"
+
+for phase in [Lobby, Playing]:
+  let lobby = Frontend(config: MatchConfig(players: 2), online: true,
+    connection: Connection(stats: NetworkStats(),
+      client: RoomClient(participant: 1, connected: true, welcomed: true)))
+  let peer = lobby.connection.client
+  peer.snapshot = RoomMessage(room: "live-authority", participant: 1,
+    phase: phase, seats: @[
+      Seat(owner: 1, name: "Host", kind: HumanSeat),
+      Seat(owner: 2, name: "Guest", kind: HumanSeat)],
+    participants: @[Participant(id: 1, connected: true),
+      Participant(id: 2, connected: true)])
+  lobby.removePlayer(1)
+  doAssert peer.outgoing.len == 1
+  let action = decode(peer.outgoing[0])
+  doAssert action.kind == ReleaseSeat and action.seat == 1,
+    "Host may release a foreign human slot without kicking its participant"
+  doAssert peer.snapshot.seats[1].owner == 2,
+    "The visible roster waits for authoritative confirmation"
 
 block:
   let local = Frontend(config: MatchConfig(players: 3), localHuman: 1)

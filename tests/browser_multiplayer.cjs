@@ -13,7 +13,7 @@ const out = process.env.GALCON_QA_OUT || path.join(scratch, 'run-' + new Date().
 fs.mkdirSync(out, {recursive:true});
 const report = {url, out, steps:[], peers:[], passed:false};
 assert.ok(['19931','9911'].includes(new URL(new URL(url).searchParams.get('server')).port),'Use QA candidate or explicitly selected live relay');
-const kinds = 'Hello Welcome ListRooms RoomList CreateRoom JoinRoom RoomState ConfigureRoom ClaimSeat ReleaseSeat Ready StartMatch BeginMatch SubmitCommand CommandAck TickPacket AppliedTick Catchup CaughtUp ReportHash MatchStatus LeaveRoom KickParticipant ReturnLobby FinishMatch Received Keepalive Failure AbortMatch PauseMatch ResizeRoom'.split(' ');
+const kinds = 'Hello Welcome ListRooms RoomList CreateRoom JoinRoom RoomState ConfigureRoom ClaimSeat ReleaseSeat StartMatch BeginMatch SubmitCommand CommandAck TickPacket AppliedTick Catchup CaughtUp ReportHash MatchStatus LeaveRoom KickParticipant ReturnLobby FinishMatch Received Keepalive Failure AbortMatch PauseMatch ResizeRoom ReadyStatus'.split(' ');
 function decode(data) {
   const b = Buffer.isBuffer(data) ? data : Buffer.from(data);
   if (b.length < 64 || b.toString('ascii',0,4) !== 'PWRM') return {unknown:true};
@@ -22,34 +22,36 @@ function decode(data) {
   const wide=()=>{const n=b.readBigUInt64LE(i).toString();i+=8;return n};
   const bytes=()=>{const n=u();const s=b.subarray(i,i+n);i+=n;return s};
   const str=()=>bytes().toString('utf8');
+  assert.equal(b.readUInt32LE(4),5,'Build the client and relay with the same current protocol');
+  const seats=()=>Array.from({length:u()},()=>({owner:u(),kind:u(),name:str()}));
   const m={kind:kinds[b.readUInt32LE(8)],match:b.readUInt32LE(20)};
   if(m.kind==='Welcome') m.participant=u();
   if(m.kind==='Hello'){m.game=str();m.gameplay=u();m.protocol=u();m.name=str();}
   if(['CreateRoom','ConfigureRoom','ResizeRoom'].includes(m.kind)){m.name=str();m.public=!!u();m.rate=u();m.count=u();m.config=str();}
   if(m.kind==='JoinRoom') m.room=str();
-  if(m.kind==='ClaimSeat'){m.seat=u();m.name=str();}
-  if(m.kind==='RoomState'){
+  if(m.kind==='ClaimSeat'){m.seat=u();m.participant=u();m.seatKind=u();m.name=str();}
+  if(m.kind==='RoomState'||m.kind==='BeginMatch'){
     m.room=str();m.name=str();m.owner=u();m.revision=u();m.phase=u();m.rate=u();m.public=!!u();m.config=str();
     m.participants=Array.from({length:u()},()=>({id:u(),name:str(),connected:!!u(),ready:!!u()}));
-    m.seats=Array.from({length:u()},()=>({owner:u(),name:str()}));
+    m.seats=seats();if(m.kind==='BeginMatch')m.hash=wide();
   }
-  if(m.kind==='SubmitCommand'){m.seat=u();m.sequence=wide();const p=bytes();m.action=Array.from({length:p.length/4},(_,j)=>p.readInt32LE(j*4));}
+  if(m.kind==='SubmitCommand'){m.seat=u();m.seatKind=u();m.sequence=wide();const p=bytes();m.action=Array.from({length:p.length/4},(_,j)=>p.readInt32LE(j*4));}
   if(m.kind==='ReportHash'||m.kind==='FinishMatch'){m.tick=u();m.hash=wide();}
-  if(m.kind==='CommandAck'){m.sequence=wide();m.tick=u();}
-  if(m.kind==='TickPacket'){m.tick=u();m.commands=Array.from({length:u()},()=>({participant:u(),seat:u(),sequence:wide(),payload:bytes().toString('hex')}));}else if(['AppliedTick','Catchup','CaughtUp'].includes(m.kind))m.tick=u();
+  if(m.kind==='CommandAck'){m.sequence=wide();m.tick=u();m.rejected=!!u();}
+  if(m.kind==='TickPacket'){m.tick=u();m.commands=Array.from({length:u()},()=>({participant:u(),seat:u(),seatKind:u(),sequence:wide(),payload:bytes().toString('hex')}));m.seats=seats();}else if(['AppliedTick','Catchup','CaughtUp'].includes(m.kind))m.tick=u();
   if(m.kind==='Failure')m.detail=str();
   return m;
 }
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function wait(label, fn, timeout=12000){const end=Date.now()+timeout;while(Date.now()<end){if(await fn())return;await sleep(100);}throw new Error('Timeout: '+label);}
 function step(s){report.steps.push(s);console.log(s);}
-async function click(p,x,y,button='left'){await p.bringToFront();await p.mouse.move(x,y);await p.waitForTimeout(100);await p.mouse.down({button});await p.waitForTimeout(140);await p.mouse.up({button});await p.waitForTimeout(300);}
+async function click(p,x,y,button='left'){await p.bringToFront();await p.waitForTimeout(300);await p.mouse.move(x,y);await p.waitForTimeout(100);await p.mouse.down({button});await p.waitForTimeout(140);await p.mouse.up({button});await p.waitForTimeout(300);}
 async function text(p,x,y,s){await click(p,x,y);await p.keyboard.press('Meta+A');await p.keyboard.press('Backspace');await p.keyboard.type(s,{delay:70});}
 async function shot(peer,name){await peer.page.bringToFront();await peer.page.waitForTimeout(150);await peer.page.screenshot({path:path.join(out,peer.role+'-'+name+'.png'),timeout:10000});}
 function last(peer,kind,direction='in'){return peer.messages.findLast(m=>m.direction===direction&&m.kind===kind);}
 const peers=[];
 async function main(){
- const browser=await chromium.launch({headless:false,args:['--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--enable-unsafe-swiftshader']});
+ const browser=await chromium.launch({headless:false,executablePath:process.env.GALCON_QA_CHROMIUM||undefined,args:['--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding','--enable-unsafe-swiftshader']});
  try{
  for (const role of ['host','guest']){
   const context=await browser.newContext({viewport:{width:1514,height:970},deviceScaleFactor:1});
@@ -68,14 +70,16 @@ async function main(){
  const room=last(host,'RoomState').room;report.room=room;assert.equal(last(host,'CreateRoom','out').public,false);
  await text(guest.page,1150,700,room);await click(guest.page,1200,764);await wait('join',()=>last(guest,'RoomState')?.room===room);
  for(const [i,p] of peers.entries()) {const seat=i?3:1;await click(p.page,620,i?364:290);await click(p.page,750,340);await wait('seat '+seat,()=>last(p,'RoomState').seats[seat].owner===last(p,'Welcome').participant);}
- for(const p of peers){await click(p.page,560,922);await wait('ready '+p.role,()=>last(p,'RoomState').participants.some(x=>x.id===last(p,'Welcome').participant&&x.ready));}
+ await click(host.page,560,922);await wait('host cosmetic ready',()=>last(host,'RoomState').participants.some(x=>x.id===last(host,'Welcome').participant&&x.ready));
+ assert.equal(last(host,'RoomState').participants.find(x=>x.id===last(guest,'Welcome').participant).ready,false,'Guest readiness must not gate starting');
  await shot(host,'ready');await click(host.page,1350,922);for(const p of peers)await wait('begin '+p.role,()=>last(p,'BeginMatch'));
  await sleep(5000);for(const p of peers)await shot(p,'started');
  for(const p of peers)assert.ok(await p.page.evaluate(()=>Module.replayTick>20),p.role+': displayed authoritative ticks must advance beyond 20');
  for(const [i,p] of peers.entries()){
-  const [sx,sy,tx,ty]=i?[539,177,1293,603]:[1416,533,486,247];
-  await p.page.bringToFront();await p.page.mouse.move(sx,sy);await sleep(500);await p.page.mouse.down();await sleep(200);await p.page.mouse.move(tx,ty,{steps:20});await sleep(200);await p.page.mouse.up();
-  await wait(p.role+' real drag submitted',()=>last(p,'SubmitCommand','out'));
+  // Seed 8, balanced map, two initialized players in sparse lobby slots 1/3.
+  const [sx,sy,tx,ty]=i?[854,259,806,350]:[1360,736,1281,818];
+  await click(p.page,sx,sy);await click(p.page,tx,ty,'right');
+  await wait(p.role+' real canvas order submitted',()=>last(p,'SubmitCommand','out'));
   const command=last(p,'SubmitCommand','out');assert.equal(command.seat,i?3:1);assert.equal(command.action[0],2,'ordinary percent send');
   await wait(p.role+' command authoritative',()=>p.messages.some(m=>m.kind==='TickPacket'&&m.commands.some(c=>c.participant===last(p,'Welcome').participant&&c.sequence===command.sequence)));await shot(p,'fleet-a');await sleep(1000);await shot(p,'fleet-b');
   const snapshots=await p.page.evaluate(()=>window.__snapshots);
