@@ -7,6 +7,7 @@ import
 const
   StarSpriteCount* = 8
   BackgroundStarCount = 224
+  BackgroundStarScale = 2.0'f
 
 type
   BackgroundStar* = object
@@ -34,7 +35,7 @@ const BackgroundStars* = block:
       size: rng.between(
         if sparkle: 550 else: 110,
         if sparkle: 850 else: 220
-      ).float32 / 100,
+      ).float32 / 100 * BackgroundStarScale,
       variant: rng.below(2).int + (if sparkle: 4 else: 0),
       opacity: rng.between(
         if sparkle: 175 else: 95,
