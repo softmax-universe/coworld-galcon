@@ -588,7 +588,7 @@ proc begin(front: Frontend, sk: Silky, window: Window, title: string): LobbyLayo
     origin = (view - vec2(1514, 970)) / 2
     top = if front.page == MultiplayerMenu: 224.0'f else: 142.0'f
   sk.clearScreen(rgbx(0, 0, 0, 255))
-  sk.drawRasterCover("Background", vec2(0), view)
+  sk.drawSpaceCover(vec2(0), view)
   sk.drawLabel(title, origin + vec2(0, 36), vec2(1514, 64),
     MenuGreen, "LobbyTitle", CenterAlign)
   result = LobbyLayout(origin: origin,

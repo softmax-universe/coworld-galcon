@@ -684,7 +684,7 @@ proc drawGame(view: View) {.measure.} =
   ## Paints 2D art, translucent effects, transparent counts, and the LD8 HUD.
   view.updateBoard()
   measurePush("background_and_planet_sprites")
-  view.sk.drawRasterImage("Background", view.offset, vec2(Width, Height))
+  view.sk.drawSpaceBackground(view.offset, vec2(Width, Height))
   for i, planet in view.session.world.planets:
     let
       entry = view.sk.atlas.entries[view.planetSprites[i]]
@@ -1183,7 +1183,7 @@ proc frame(view: View) =
   if view.screen == MenuScreen and view.front.nameDialogOpen():
     view.sk.beginUi(view.window, view.window.size)
     view.sk.clearScreen(rgbx(0, 0, 0, 255))
-    view.sk.drawRasterCover("Background", vec2(0),
+    view.sk.drawSpaceCover(vec2(0),
       view.window.size.vec2 / view.sk.uiScale)
     discard view.front.identityUi(view.sk, view.window)
     view.sk.endUi()
@@ -1224,7 +1224,7 @@ proc frame(view: View) =
   view.sk.beginUi(view.window, view.window.size)
   view.sk.clearScreen(rgbx(0, 0, 0, 255))
   if view.screen in {MenuScreen, HelpScreen}:
-    view.sk.drawRasterCover("Background", vec2(0),
+    view.sk.drawSpaceCover(vec2(0),
       view.window.size.vec2 / view.sk.uiScale)
   view.sk.pushClipRect(rect(view.offset, vec2(Width, Height)))
   case view.screen
@@ -1314,7 +1314,7 @@ proc runGraphics*(options: Options) =
   let
     builder = newAtlasBuilder(4096, 8)
     paints = newPaints(MaxPlanets)
-  doAssert builder.addImage("Background", paints.background)
+  builder.addBackground(paints)
   doAssert builder.addImage("Particle", paints.particle)
   builder.addRasterFont(Assets / "SAVEDBYZ.TTF", "Title", 80,
     @["g", "a", "l", "c", "o", "n", " ", "2", "0", "6"])

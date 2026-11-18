@@ -11,7 +11,7 @@ loadExtensions()
 echo "GL vendor=", cast[cstring](glGetString(GL_VENDOR)), " renderer=", cast[cstring](glGetString(GL_RENDERER)), " version=", cast[cstring](glGetString(GL_VERSION))
 let builder = newAtlasBuilder(4096, 8)
 let paints = newPaints(MaxPlanets)
-doAssert builder.addImage("Background", paints.background)
+builder.addBackground(paints)
 doAssert builder.addImage("Particle", paints.particle)
 for spec in [("Hud",24), ("Small",20), ("Hover",16), ("ScoreTitle",24), ("Score",14), ("ScoreSmall",10), ("Players",14), ("Numbers",14), ("TinyNumbers",9)]:
   builder.addRasterFont(Assets / "zeroes_3.ttf", spec[0], spec[1].float32)

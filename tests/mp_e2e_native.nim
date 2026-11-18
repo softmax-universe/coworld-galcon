@@ -27,7 +27,7 @@ proc makeClient(title: string): ClientView =
   loadExtensions()
   let builder = newAtlasBuilder(4096, 8)
   let paints = newPaints(MaxPlanets)
-  doAssert builder.addImage("Background", paints.background)
+  builder.addBackground(paints)
   doAssert builder.addImage("Particle", paints.particle)
   builder.addRasterFont(Assets / "SAVEDBYZ.TTF", "Title", 80,
     @["g", "a", "l", "c", "o", "n", " ", "2", "0", "6"])

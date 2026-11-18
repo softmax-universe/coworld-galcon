@@ -4,8 +4,8 @@ import
   galcon/[common, rasters, textures, worlds]
 
 proc testRasters*() =
-  ## Verifies HD texture sizes, opaque planets, and logical font metrics.
-  echo "HD assets and fonts retain logical sizes at fourfold pixel density"
+  ## Verifies layered sky assets, opaque planets, and logical font metrics.
+  echo "Layered sky assets and HD fonts retain their logical sizes"
   let
     original = newAtlasBuilder(512, 2)
     sharp = newAtlasBuilder(1024, 2)
@@ -27,8 +27,18 @@ proc testRasters*() =
     before = world.fingerprint()
     surface = paints.planetImage(planet, 1)
     sprite = paints.planetSprite(planet, 1)
-  doAssert paints.background.width == Width * ArtScale
-  doAssert paints.background.height == Height * ArtScale
+    board = paints.boardImage(world)
+  doAssert paints.background.width >= Width * 2
+  doAssert paints.background.height >= Height * 2
+  doAssert paints.background.width * Height == paints.background.height * Width
+  for star in paints.stars:
+    doAssert star.width in 1 .. 128 and star.height in 1 .. 128
+    var transparent, visible: bool
+    for pixel in star.data:
+      transparent = transparent or pixel.a == 0
+      visible = visible or pixel.a > 16
+    doAssert transparent and visible,
+      "Generated star sprites must retain actual transparent backgrounds"
   doAssert paints.terrain.width == TextureSize * ArtScale
   doAssert paints.atmosphere.width == 324 * ArtScale
   doAssert surface.width == (planet.radius * 2 + 1) * ArtScale
@@ -36,4 +46,9 @@ proc testRasters*() =
   doAssert sprite.height == PlanetSpriteSize
   doAssert sprite[PlanetSpriteSize div 2, PlanetSpriteSize div 2].a == 255
   doAssert sprite[0, 0].a == 0
+  doAssert board.width == Width * ArtScale
+  doAssert board.height == Height * ArtScale
+  for pixel in board.data:
+    doAssert pixel.a == 255,
+      "Resizing the native nebula must not leave transparent export edges"
   doAssert world.fingerprint() == before

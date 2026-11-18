@@ -1,0 +1,27 @@
+{
+  "generator": "Built-in imagegen",
+  "reference": "../bkgr.png",
+  "original_artist": "Phil Hassey",
+  "purpose": "Separate starless nebula and transparent star sprite sheet for runtime layered rendering.",
+  "processing": "Generated PNGs are stored at native output dimensions, without upscaling. The renderer crops individual stars from the 4-by-2 sheet, retains their alpha, and draws them separately over the nebula.",
+  "assets": {
+    "nebula-v2.png": {
+      "width": 1448,
+      "height": 1086,
+      "alpha": false,
+      "requested_width": 3072,
+      "requested_height": 2304,
+      "prompt": "Use case: precise-object-edit. Asset type: high-resolution starless nebula background texture for Galcon. Image 1 is the original Galcon background and the style/composition reference. Rebuild its cloudy background at 3072 by 2304 pixels, landscape 4:3, resolving genuinely fine wispy cloud detail rather than enlarging blurry pixels. Keep the original dark blue and navy clouds across the top, violet through the center, purple-magenta clouds toward the bottom, and irregular nearly black open patches. Match the original understated painted/fractal 2006 space-game aesthetic, broad cloud distribution and brightness. The entire output must contain ONLY the cloudy nebula: remove every white star, dot, sparkle and cross because stars will be rendered separately in the game. No planets, galaxies, suns, sharp light points, lens flare, ships, UI, text, border, watermark, or bright white areas. Keep large dark areas and soft restrained color so small game units remain easy to see. Opaque background, maximum detail and resolution."
+    },
+    "stars-v2.png": {
+      "width": 1774,
+      "height": 887,
+      "alpha": true,
+      "columns": 4,
+      "rows": 2,
+      "requested_width": 2048,
+      "requested_height": 1024,
+      "prompt": "Use case: stylized-concept. Asset type: transparent star sprite sheet for a high-resolution remake of a 2006 space strategy game. Make exactly eight isolated white/cool-white star elements in an exact evenly spaced 4-column by 2-row grid on a genuinely transparent background with an alpha channel. Canvas 2048 by 1024 pixels; each 512 by 512 cell has one star centered at its exact center, with at least 120 pixels of completely transparent margin on every side of the cell. Top row: four subtle small stellar points, from a tiny crisp round light with minimal glow to a softly radiant bright point. Bottom row: four simple thin cross-shaped star sparkles, two diagonal X shapes and two four-point plus shapes, matching understated old Galcon stars. Fine crisp white cores with very restrained pale cool glow fading smoothly into true transparency. Keep the star silhouettes simple, elegant, antialiased and readable when drawn small. No backdrop, no nebula, no black or colored rectangles, no checkerboard pattern, no extra scattered dots, no planets, no decorative rings, no cinematic long flares, no labels, no grid lines, no text, no watermark. Every element must be separated so the game can draw the eight stars independently."
+    }
+  }
+}

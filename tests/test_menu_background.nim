@@ -10,7 +10,7 @@ loadExtensions()
 let builder = newAtlasBuilder(4096, 8)
 builder.addMenuAssets()
 let paints = newPaints(2)
-doAssert builder.addImage("Background", paints.background)
+builder.addBackground(paints)
 let sk = newSilky(window, builder.atlasImage, builder.atlas)
 sk.theme = galconTheme()
 let front = Frontend(config: MatchConfig(players: 2),

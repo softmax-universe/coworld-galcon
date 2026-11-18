@@ -4,11 +4,79 @@ import
   polyworld/rngs,
   common
 
+const
+  StarSpriteCount* = 8
+  BackgroundStarCount = 224
+
 type
+  BackgroundStar* = object
+    position*: Vec2
+    size*: float32
+    variant*: int
+    opacity*: uint8
   Paints* = ref object
     background*, shader*, atmosphere*, particle*, terrain*: Image
+    stars*: array[StarSpriteCount, Image]
     surfaces*: seq[array[MaxPlayers + 1, Image]]
     halos*: seq[array[MaxPlayers + 1, Image]]
+
+const BackgroundStars* = block:
+  var
+    rng = initRng(2006, 0x535441524649454c'u64)
+    stars: array[BackgroundStarCount, BackgroundStar]
+  for i in 0 ..< stars.len:
+    let sparkle = i >= BackgroundStarCount - 12
+    stars[i] = BackgroundStar(
+      position: vec2(
+        rng.between(100, 63900).float32 / 64000,
+        rng.between(100, 47900).float32 / 48000
+      ),
+      size: rng.between(
+        if sparkle: 550 else: 110,
+        if sparkle: 850 else: 220
+      ).float32 / 100,
+      variant: rng.below(2).int + (if sparkle: 4 else: 0),
+      opacity: rng.between(
+        if sparkle: 175 else: 95,
+        if sparkle: 235 else: 205
+      ).uint8
+    )
+  stars
+
+proc starSprites(sheet: Image): array[StarSpriteCount, Image] =
+  ## Crops generated transparent cells and caps their atlas footprint.
+  for i in 0 ..< StarSpriteCount:
+    let
+      x0 = (i mod 4) * sheet.width div 4
+      y0 = (i div 4) * sheet.height div 2
+      width = (i mod 4 + 1) * sheet.width div 4 - x0
+      height = (i div 4 + 1) * sheet.height div 2 - y0
+      cell = sheet.subImage(x0, y0, width, height)
+    var
+      left = width
+      top = height
+      right = -1
+      bottom = -1
+    for y in 0 ..< height:
+      for x in 0 ..< width:
+        if cell[x, y].a > 4:
+          left = min(left, x)
+          top = min(top, y)
+          right = max(right, x)
+          bottom = max(bottom, y)
+    if right < left:
+      raise newException(GalconError, "Star sheet contains an empty cell")
+    left = max(0, left - 3)
+    top = max(0, top - 3)
+    right = min(width - 1, right + 3)
+    bottom = min(height - 1, bottom + 3)
+    let
+      sprite = cell.subImage(left, top, right - left + 1, bottom - top + 1)
+      scale = min(1.0'f, 128.0'f / max(sprite.width, sprite.height).float32)
+    result[i] = if scale < 1:
+        sprite.resize(max(1, int(sprite.width.float32 * scale)),
+          max(1, int(sprite.height.float32 * scale)))
+      else: sprite
 
 proc plasma*(seed: int32): seq[uint8] =
   ## Recreates Phil Hassey's recursive grayscale terrain with a private seed.
@@ -56,10 +124,11 @@ proc plasma*(seed: int32): seq[uint8] =
   result = pixels
 
 proc newPaints*(count: int): Paints =
-  ## Loads the original art and initializes bounded per-owner sprite caches.
+  ## Loads layered HD art and initializes bounded per-owner sprite caches.
   try:
     result = Paints(
-      background: readImage(Assets / "hd" / "background.png"),
+      background: readImage(Assets / "hd" / "nebula-v2.png"),
+      stars: starSprites(readImage(Assets / "hd" / "stars-v2.png")),
       shader: readImage(Assets / "pshader.png"),
       atmosphere: readImage(Assets / "hd" / "atmosphere.png"),
       particle: readImage(Assets / "hd" / "particle.png").resize(20, 20),
@@ -68,7 +137,7 @@ proc newPaints*(count: int): Paints =
       halos: newSeq[array[MaxPlayers + 1, Image]](count)
     )
   except PixieError, IOError, OSError:
-    raise newException(GalconError, "Cannot load original artwork: " &
+    raise newException(GalconError, "Cannot load game artwork: " &
       getCurrentExceptionMsg())
 
 proc planetImage*(paints: Paints, planet: Planet, owner: int): Image =
@@ -189,8 +258,25 @@ proc addGlow*(destination, glow: Image, x, y: int) =
       )
 
 proc boardImage*(paints: Paints, world: World): Image =
-  ## Composes the unchanged 2006 background, textured planets, and bright halos.
-  result = paints.background.copy()
+  ## Composes the layered sky, textured planets, and bright halos for export.
+  result = newImage(Width * ArtScale, Height * ArtScale)
+  result.fill(rgbx(0, 0, 0, 255))
+  result.draw(paints.background, scale(vec2(
+    result.width.float32 / paints.background.width.float32,
+    result.height.float32 / paints.background.height.float32
+  )))
+  for star in BackgroundStars:
+    let
+      source = paints.stars[star.variant]
+      scale = star.size * ArtScale.float32 /
+        max(source.width, source.height).float32
+      sprite = source.resize(max(1, int(source.width.float32 * scale)),
+        max(1, int(source.height.float32 * scale)))
+    sprite.applyOpacity(star.opacity.float32 / 255)
+    result.draw(sprite, translate(vec2(
+      star.position.x * result.width.float32 - sprite.width.float32 / 2,
+      star.position.y * result.height.float32 - sprite.height.float32 / 2
+    )))
   for i, planet in world.planets:
     let owner = planet.owner
     if paints.surfaces[i][owner] == nil:

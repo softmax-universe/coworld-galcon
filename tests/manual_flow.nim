@@ -26,7 +26,7 @@ proc runFlowDemo(interactive: bool) =
   let
     builder = newAtlasBuilder(4096, 8)
     paints = newPaints(MaxPlanets)
-  doAssert builder.addImage("Background", paints.background)
+  builder.addBackground(paints)
   doAssert builder.addImage("Particle", paints.particle)
   for font in [("Hud", 24), ("Small", 20), ("Hover", 16),
       ("ScoreTitle", 24), ("Score", 14), ("ScoreSmall", 10),
