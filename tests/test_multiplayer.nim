@@ -6,6 +6,18 @@ import
 
 proc testMultiplayer*() =
   ## Exercises real binary relay traffic, distributed bots, reconnect, and replay.
+  proc assertRecordedChat(world: World, recording: Recording) =
+    ## Scrubbing restores the visible ring from the complete recorded transcript.
+    var expected: seq[ChatMessage]
+    for message in recording.chats:
+      if message.tick < world.tick:
+        expected.add message
+    let first = max(0, expected.len - MaxChatLines)
+    doAssert world.chatCount == expected.len - first
+    for i in 0 ..< world.chatCount:
+      doAssert world.chats[(world.chatFirst + i) mod MaxChatLines] ==
+        expected[first + i]
+
   let relay = Relay()
   var
     clients: seq[RoomClient]
@@ -140,7 +152,14 @@ proc testMultiplayer*() =
     doAssert humanOrders == 1
     for i in 0 ..< match.session.liveWorld.pendingLaunchCount:
       doAssert match.session.liveWorld.pendingLaunches[i].player != 1
-    doAssert match.session.recording.chats.len > 0
+    doAssert match.session.recording.chats == matches[0].session.recording.chats
+    var humanMessages = 0
+    for message in match.session.recording.chats:
+      if message.player == 1:
+        inc humanMessages
+        doAssert message.chatText() == "hello from Green"
+    doAssert humanMessages == 1
+    assertRecordedChat(match.session.liveWorld, match.session.recording)
     doAssert match.client.snapshot.phase != Desynced
     doAssert match.session.recording.hashes == matches[0].session.recording.hashes
   echo "Galcon network rewind and native replay verification"
@@ -150,12 +169,21 @@ proc testMultiplayer*() =
     path = Root / "build/network-test.replay"
   session.seek(77)
   doAssert session.world.tick == 77
+  assertRecordedChat(session.world, session.recording)
   doAssert session.liveWorld.fingerprint() == finalHash
   session.returnToLive()
   session.saveRecording(path)
   let playback = newSession(parseOptions(@["--replay", path]))
+  doAssert playback.replay.chats == session.recording.chats
   playback.seek(384)
   doAssert playback.world.fingerprint() == finalHash
+  for tick in [77'i32, 0, 129, 384]:
+    session.seek(tick)
+    playback.seek(tick)
+    assertRecordedChat(session.world, session.recording)
+    assertRecordedChat(playback.world, playback.replay)
+    doAssert playback.world.fingerprint() == session.world.fingerprint()
+    doAssert session.liveWorld.fingerprint() == finalHash
   removeFile(path)
   echo "Galcon rejects malformed and unauthorized commands"
   for bad in ["{}", "null", "{\"players\":17}", "{\"planets\":2}",

@@ -94,7 +94,7 @@ type
       ## Viewer metadata never enters simulation state or the BASIC host.
 
 proc recordTick*(recording: Recording, world: World) {.measure.} =
-  ## Appends bounded orders and the resulting state hash for one tick.
+  ## Records accepted launches, chat, and their resulting hash for one tick.
   if recording.hashes.len >= MaxTicks:
     raise newException(GalconError, "Replay exceeds the 30-minute limit")
   for order in world.orders:
@@ -481,7 +481,7 @@ proc replayTick*(
     recording: Recording, world: World, cursor, chatCursor: var int,
     observer: ArrivalObserver = nil
 ) =
-  ## Applies recorded orders and checks the next deterministic simulation hash.
+  ## Restores chat and launches without rerunning bots, then verifies the hash.
   if world.tick >= recording.hashes.len.int32:
     return
   let tick = world.tick
