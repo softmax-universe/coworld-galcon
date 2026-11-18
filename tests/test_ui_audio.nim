@@ -205,15 +205,41 @@ doAssert view.screen == MenuScreen and view.musicSource == soundtrack and
   view.musicSource.playing and view.musicSource.playback >= playingOffset,
   "Returning to the menu preserves the same playing soundtrack"
 
-let muted = View(options: parseOptions(@["--mute"]), front: Frontend())
+let
+  mutedOptions = parseOptions(@["--mute"])
+  muted = View(options: mutedOptions, front: newFrontend(mutedOptions))
+doAssert muted.front.preferences.mainVolume == 0
+muted.front.preferences.musicVolume = 20
+muted.front.preferences.fxVolume = 40
 muted.initSounds()
-doAssert muted.musicSource == nil and muted.launchSource == nil
+doAssert muted.musicSource != nil and muted.launchSource != nil
+doAssert muted.musicSource.playing and muted.musicSource.gain == 0
 for cue in UiCue:
-  doAssert muted.uiSources[cue] == nil, "The mute option skips audio creation"
+  doAssert muted.uiSources[cue] != nil and muted.uiSources[cue].gain == 0,
+    "A muted launch creates silent sources that settings can enable"
+muted.musicEnabled = false
+muted.syncAudio()
+muted.front.preferences.mainVolume = 50
+muted.syncAudio()
+doAssert not muted.musicSource.playing
+doAssert muted.musicSource.gain > 0 and muted.launchSource.gain > 0,
+  "The mute flag cannot permanently disable audio after a settings change"
+
+let screenshot = View(options: parseOptions(@[
+    "--screenshot", "unused.png", "--unmute"]),
+  front: Frontend())
+screenshot.initSounds()
+doAssert screenshot.musicSource == nil and screenshot.launchSource == nil
+for cue in UiCue:
+  doAssert screenshot.uiSources[cue] == nil,
+    "Screenshot capture still skips audio creation"
 
 view.front.onUiCue = nil
+muted.front.onUiCue = nil
 for source in [view.musicSource, view.launchSource, view.blastSource,
-  view.captureSource, view.uiSources[UiHover], view.uiSources[UiClick]]:
+  view.captureSource, view.uiSources[UiHover], view.uiSources[UiClick],
+  muted.musicSource, muted.launchSource, muted.blastSource,
+  muted.captureSource, muted.uiSources[UiHover], muted.uiSources[UiClick]]:
     source.close()
 glDeleteTextures(1, colorTexture.addr)
 glDeleteFramebuffers(1, framebuffer.addr)

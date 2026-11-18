@@ -173,8 +173,6 @@ proc parseOptions*(arguments: seq[string]): Options =
     of "--headless":
       result.headless = true
       result.start = true
-    of "--mute":
-      result.muted = true
     of "--screenshot":
       result.screenshot = arguments.argumentValue(index, argument)
       result.muted = true
@@ -202,7 +200,7 @@ proc parseOptions*(arguments: seq[string]): Options =
       echo "--start --difficulty easy|medium|hard|crazy --tutorial 1|2|3"
       echo "--players N --planets N --player[:SLOT] --bot PATH[:COUNT]"
       echo "--neutrals-per-player N: one home with N nearby neutrals each"
-      echo "--seed N --headless --mute"
+      echo "--seed N --headless --mute --unmute --mute=false"
       echo "--balanced-map true|false"
       echo "--enemy-ships-pass-through true|false"
       echo "--neutrals-dont-produce true|false"

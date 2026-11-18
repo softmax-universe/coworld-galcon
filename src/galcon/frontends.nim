@@ -131,6 +131,7 @@ proc newFrontend*(options: Options): Frontend =
   if options.playerCount > 2 or options.planetCount != 26:
     result.config.players = options.playerCount
     result.config.planets = options.planetCount
+  configureSoundLaunch(options.game.soundMuted, options.game.soundOverride)
   try:
     result.preferences = readPreferences(AppName)
   except MenusError, IOError, OSError:
