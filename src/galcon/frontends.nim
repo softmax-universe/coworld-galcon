@@ -32,6 +32,7 @@ type
     readyAttempt: uint32
     contextOwner: uint32
     contextRoom, contextKind: string
+    contextPolicy: LocalPolicy
     contextArmed, contextDismissed: bool
     invite, search: string
     publicRoom: bool = true
@@ -325,27 +326,44 @@ proc administer(front: Frontend): bool =
   client.connected and client.welcomed and client.snapshot.room.len > 0 and
     client.snapshot.phase == Lobby and client.snapshot.participant == client.participant
 
+proc canManagePlayer(front: Frontend, index: int): bool =
+  ## Allows occupied local slots, owned network slots, and host moderation.
+  if front.synchronizing() or index notin 0 ..< front.config.players:
+    return false
+  if not front.online:
+    return front.localHuman == index + 1 or front.policies[index].bytes.len > 0
+  if front.connection == nil or front.connection.client == nil:
+    return false
+  let client = front.connection.client
+  if not client.connected or not client.welcomed or
+    client.snapshot.room.len == 0 or client.snapshot.phase != Lobby or
+    index >= client.snapshot.seats.len:
+      return false
+  let seat = client.snapshot.seats[index]
+  seat.owner != 0 and (seat.owner == client.participant or
+    client.snapshot.participant == client.participant)
+
 proc playerContext*(front: Frontend, index: int) =
   ## Store exact identity and revalidate before dispatch, never a recycled index.
   front.contextSeat = -1
-  if front.synchronizing() or not front.administer() or
-    index notin 0 ..< front.config.players: return
+  if not front.canManagePlayer(index): return
   if front.online:
     let client = front.connection.client
-    if index >= client.snapshot.seats.len: return
     let seat = client.snapshot.seats[index]
-    if seat.owner == 0 or (seat.name == "Human" and seat.owner == client.participant): return
     front.contextOwner = seat.owner
     front.contextKind = seat.name
     front.contextRoom = client.snapshot.room
-  elif front.localHuman == index + 1 or front.policies[index].bytes.len == 0: return
+  else:
+    front.contextKind = if front.localHuman == index + 1: "Human" else: "Bot"
+    front.contextPolicy = front.policies[index]
   front.contextSeat = index
   front.contextArmed = false
 
 proc activateContext*(front: Frontend) =
+  ## Revalidates the target before leaving a slot, removing a bot, or kicking.
   let index = front.contextSeat
-  if not front.administer() or front.synchronizing() or
-    index notin 0 ..< front.config.players: reject("Player action is no longer available")
+  if not front.canManagePlayer(index):
+    reject("Player action is no longer available")
   if front.online:
     let client = front.connection.client
     if client.snapshot.room != front.contextRoom or index >= client.snapshot.seats.len:
@@ -357,11 +375,14 @@ proc activateContext*(front: Frontend) =
     for participant in client.snapshot.participants:
       if participant.id == seat.owner and participant.connected: present = true
     if not present: reject("Player left")
-    client.send(RoomMessage(kind: if seat.name == "Human": KickParticipant else: ReleaseSeat,
-      participant: if seat.name == "Human": seat.owner else: 0,
-      seat: index.uint32))
-    if seat.name != "Human": front.networkPolicies[index] = LocalPolicy()
+    if seat.name == "Human" and seat.owner != client.participant:
+      client.send(RoomMessage(kind: KickParticipant, participant: seat.owner))
+    else:
+      front.removePlayer(index)
   else:
+    if (front.localHuman == index + 1) != (front.contextKind == "Human") or
+      front.policies[index] != front.contextPolicy:
+        reject("Player changed")
     front.removePlayer(index)
   front.contextSeat = -1
 
@@ -775,20 +796,16 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         if participant.id == seat.owner:
           if human: label = participant.name
           status = if participant.ready: "ready" else: "not ready"
-    if front.menuButton(sk, "", point, 360, height = 64,
+    if front.menuButton(sk, "", point, 418, height = 64,
       enabled = enabled and visible and hovered and (mine or empty)):
         front.ui.selectedSeat = i
     sk.drawRect(point + vec2(12, 20), vec2(24, 24),
       if empty: rgbx(95, 98, 103, 255) else: rgbx(color[0], color[1], color[2], 255))
     sk.lobbyLabel(label,
-      point + vec2(48, 0), 300, tint = if empty: LobbyMuted else: rgbx(240, 237, 225, 255))
-    sk.lobbyLabel(status, point + vec2(48, 28), 300,
+      point + vec2(48, 0), 360, tint = if empty: LobbyMuted else: rgbx(240, 237, 225, 255))
+    sk.lobbyLabel(status, point + vec2(48, 28), 360,
       tint = if online and not empty: readinessColor(status == "ready")
         else: LobbyMuted)
-    if front.menuButton(sk, "-", point + vec2(370, 14), 38, height = 36,
-      enabled = enabled and hovered and not empty and
-        (mine or (owner and not human))):
-          front.removePlayer(i)
   sk.popClipRect()
   let fill = layout.left + vec2(24, layout.panelHeight - 142)
   if owner:
@@ -834,21 +851,21 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
         front.launch = front.localMatch()
   if front.contextSeat >= 0:
     let index = front.contextSeat
-    let valid = index < front.config.players
+    let valid = front.canManagePlayer(index)
     let seat = if online and valid: snapshot.seats[index] else: Seat()
-    let canKick = online and valid and owner and seat.name == "Human" and
-      seat.owner notin [0'u32, client.participant] and editable
-    let canRemove = valid and editable and (not online or
-      seat.owner == client.participant or (owner and seat.name != "Human"))
+    let human = front.contextKind == "Human"
+    let action = if online and human and seat.owner != client.participant:
+        "kick player"
+      elif human: "leave slot"
+      else: "remove bot"
     let popup = vec2(clamp(front.contextAt.x, 0.0'f,
       window.size.x.float32 / sk.uiScale - 280),
       clamp(front.contextAt.y, 0.0'f,
         window.size.y.float32 / sk.uiScale - 176))
     sk.lobbyPanel(popup, vec2(280, 176))
     sk.lobbyLabel("player actions", popup + vec2(12, 0), 256)
-    if front.menuButton(sk, if (if online: front.contextKind == "Human" else: false):
-      "kick player" else: "remove bot",
-      popup + vec2(12, 44), 256, enabled = canKick or canRemove) and
+    if front.menuButton(sk, action,
+      popup + vec2(12, 44), 256, enabled = valid) and
       front.contextArmed:
         front.activateContext()
     let inside = overlaps(window.mousePos.vec2 / sk.uiScale, rect(popup, vec2(280, 176)))
