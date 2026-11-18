@@ -124,6 +124,8 @@ type
     balancedMap*: bool
       ## Explicit generator switch; false preserves historical RNG/positions.
       ## Fresh lobby MatchConfig enables it; zero/default and old tapes do not.
+    legacyBalancedMap*: bool
+      ## Version 20 and older preserve grid placement and perimeter homes.
     legacyMovement*: bool
       ## Version 14 and older preserve hard friendly collisions and FIFO retries.
     legacyFlocking*: bool

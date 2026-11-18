@@ -146,7 +146,7 @@ proc placePlanets(world: World) =
     world.bodies[planet.body].x = planet.x
     world.bodies[planet.body].y = planet.y
 
-proc arrangeBalanced(world: World, homes: seq[int]) =
+proc arrangeLegacyBalanced(world: World, homes: seq[int]) =
   ## Match production/radii in complete groups of four, not mirrored positions.
   ## Remainders add one planet in opposite-first quadrant order; populations
   ## therefore differ by at most one and full groups keep identical sizes.
@@ -234,6 +234,122 @@ proc arrangeBalanced(world: World, homes: seq[int]) =
       planet.y = fixed((if (q and 2) == 0: y else: Height - y).int32)
       world.bodies[planet.body].x = planet.x
       world.bodies[planet.body].y = planet.y
+
+proc arrangeBalanced(world: World, homes: seq[int]) =
+  ## Matches quadrant resources while independently scattering safe positions.
+  const Quadrants = [0, 3, 1, 2]
+  let compact = world.planets.len > CompactPlanetThreshold or
+    world.setup.placement == ClusteredPlacement
+  var
+    members: array[4, seq[int]]
+    capacities: array[4, int]
+    isHome = newSeq[bool](world.planets.len)
+  for i in 0 ..< world.planets.len:
+    inc capacities[Quadrants[i mod 4]]
+  var shuffled = homes
+  for i in countdown(shuffled.high, 1):
+    let j = world.rng.below((i + 1).int32).int
+    swap(shuffled[i], shuffled[j])
+  for i, index in shuffled:
+    members[Quadrants[i mod 4]].add index
+    isHome[index] = true
+  for index in 0 ..< world.planets.len:
+    if isHome[index]: continue
+    var selected = -1
+    for q in Quadrants:
+      if members[q].len < capacities[q] and
+        (selected < 0 or members[q].len < members[selected].len):
+          selected = q
+    doAssert selected >= 0
+    members[selected].add index
+  let homeGroups = (homes.len + 3) div 4
+  for group in 0 ..< (world.planets.len + 3) div 4:
+    let
+      production = if group < homeGroups: 100 else: world.rng.between(1, 100).int
+      radius = if compact: 6 + production * 5 div 100
+               else: 12 + production * 10 div 100
+      ships = if group < homeGroups: stock(100)
+              else: stock(world.rng.between(10, 29).int)
+    for q in 0 ..< 4:
+      if group >= members[q].len: continue
+      let index = members[q][group]
+      let planet = world.planets[index]
+      planet.production = production
+      planet.radius = radius
+      planet.ships = ships
+      planet.realShips = ships
+      planet.morale = if isHome[index]: 100 else: 50
+      planet.realMorale = planet.morale
+  for q in 0 ..< 4:
+    var order = members[q]
+    order.sort(proc(a, b: int): int =
+      ## Places homes and larger bodies first so smaller neutrals fill gaps.
+      result = cmp(isHome[b], isHome[a])
+      if result == 0:
+        result = cmp(world.planets[b].radius, world.planets[a].radius)
+      if result == 0:
+        result = cmp(a, b)
+    )
+    var placed = false
+    for restart in 0 ..< 32:
+      var positions: seq[tuple[index, x, y: int]]
+      for index in order:
+        let
+          planet = world.planets[index]
+          home = isHome[index]
+          left = 8 + planet.radius + (if home: 12 else: 0)
+          top = 40 + planet.radius + (if home: 10 else: 0)
+          right = Width div 2 - max(planet.radius + PlanetGap div 2,
+            if home: 40 else: 0)
+          bottom = Height div 2 - max(planet.radius + PlanetGap div 2,
+            if home: 40 else: 0)
+        var
+          bestX, bestY, accepted: int
+          bestScore = -1'i64
+        for attempt in 0 ..< 384:
+          let
+            x = world.rng.between(left.int32, right.int32).int
+            y = world.rng.between(top.int32, bottom.int32).int
+          var
+            clear = true
+            score = int64.high
+          for other in positions:
+            let
+              radius = planet.radius + world.planets[other.index].radius
+              gap = max(radius + PlanetGap,
+                if home and isHome[other.index]: 80 else: 0).int64
+              dx = (x - other.x).int64
+              dy = (y - other.y).int64
+              distance = dx * dx + dy * dy
+            if distance < gap * gap:
+              clear = false
+              break
+            score = min(score, distance - gap * gap)
+          if clear:
+            if score > bestScore:
+              bestScore = score
+              bestX = x
+              bestY = y
+            inc accepted
+            if accepted == (if home: 12 else: 8): break
+        if bestScore < 0: break
+        positions.add (index, bestX, bestY)
+      if positions.len == order.len:
+        for point in positions:
+          let planet = world.planets[point.index]
+          planet.x = fixed((if (q and 1) == 0:
+              point.x else: Width - point.x).int32)
+          planet.y = fixed((if (q and 2) == 0:
+              point.y else: Height - point.y).int32)
+        placed = true
+        break
+    if not placed:
+      # An exceptional packed seed still gets a valid, fair map.
+      world.arrangeLegacyBalanced(homes)
+      return
+  for planet in world.planets:
+    world.bodies[planet.body].x = planet.x
+    world.bodies[planet.body].y = planet.y
 
 proc newWorld*(setup: Setup): World =
   ## Creates and separates the original map with a portable Polyworld seed.
@@ -343,7 +459,10 @@ proc newWorld*(setup: Setup): World =
     if initial.home: homes.add result.planets.len
     result.planets.add planet
   if setup.balancedMap:
-    result.arrangeBalanced(homes)
+    if setup.legacyBalancedMap:
+      result.arrangeLegacyBalanced(homes)
+    else:
+      result.arrangeBalanced(homes)
   elif setup.placement == ClusteredPlacement:
     result.arrangeClusters()
   if setup.balancedMap:
@@ -656,6 +775,8 @@ proc fingerprint*(world: World): uint64 {.measure.} =
     mix(cast[uint32](int32(value)).uint64)
   if world.setup.balancedMap:
     mix(0x42414c414e434544'u64) # Opt-in only: old fingerprints are unchanged.
+    if not world.setup.legacyBalancedMap:
+      mix(0x5343415454455231'u64)
   if not world.setup.legacyMovement:
     mix(0x464c4f434b3135'u64)
     if not world.setup.legacyFlocking:

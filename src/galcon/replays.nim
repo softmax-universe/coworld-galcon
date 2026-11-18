@@ -4,7 +4,7 @@ import
   common, worlds, profiles, chats
 
 const
-  ReplayVersion* = 20'u16
+  ReplayVersion* = 21'u16
   MaxTicks* = TickRate * 60 * 30
   MaxOrders* = 1_000_000
 
@@ -82,6 +82,9 @@ type
   EscapeRecordingData = object
     crossings: CrossingRecordingData
     legacyDeadlocks: bool
+  LayoutRecordingData = object
+    escape: EscapeRecordingData
+    legacyBalancedMap: bool
   Recording* = ref object
     setup*: Setup
     orders*: seq[Order]
@@ -138,7 +141,7 @@ proc save*(recording: Recording, path: string) =
       ),
       legacyFlocking: recording.setup.legacyFlocking
     )
-    saveReplayFile(path, "galcon", ReplayVersion, EscapeRecordingData(
+    let escape = EscapeRecordingData(
       crossings: CrossingRecordingData(
         routes: RouteRecordingData(
           contacts: ContactRecordingData(
@@ -149,6 +152,10 @@ proc save*(recording: Recording, path: string) =
         legacyCrossings: recording.setup.legacyCrossings
       ),
       legacyDeadlocks: recording.setup.legacyDeadlocks
+    )
+    saveReplayFile(path, "galcon", ReplayVersion, LayoutRecordingData(
+      escape: escape,
+      legacyBalancedMap: recording.setup.legacyBalancedMap
     ))
   except IOError, OSError, ReplayError:
     raise newException(
@@ -242,6 +249,7 @@ proc loadRecording*(path: string): Recording =
         data: RulesRecordingData
         legacyLaunches = header.gameVersion == 12
         balancedMap = false
+        legacyBalancedMap = true
         legacyMovement = true
         legacyFlocking = true
         legacyContacts = true
@@ -314,9 +322,15 @@ proc loadRecording*(path: string): Recording =
         legacyRouteSteering = current.routes.legacyRouteSteering
         legacyCrossings = current.legacyCrossings
       else:
-        let current = decodeReplayFile(
-          "galcon", ReplayVersion, bytes, EscapeRecordingData
-        )
+        var current: EscapeRecordingData
+        if header.gameVersion == 20:
+          current = decodeReplayFile("galcon", 20, bytes, EscapeRecordingData)
+        else:
+          let layout = decodeReplayFile(
+            "galcon", ReplayVersion, bytes, LayoutRecordingData
+          )
+          current = layout.escape
+          legacyBalancedMap = layout.legacyBalancedMap
         let
           crossings = current.crossings
           contacts = crossings.routes.contacts
@@ -338,6 +352,7 @@ proc loadRecording*(path: string): Recording =
         placement: data.placement,
         legacyLaunches: legacyLaunches,
         balancedMap: balancedMap,
+        legacyBalancedMap: legacyBalancedMap,
         legacyMovement: legacyMovement,
         legacyFlocking: legacyFlocking,
         legacyContacts: legacyContacts,
@@ -364,6 +379,8 @@ proc loadRecording*(path: string): Recording =
       result.setup.legacyCrossings = true
     if header.gameVersion < 20:
       result.setup.legacyDeadlocks = true
+    if header.gameVersion < 21:
+      result.setup.legacyBalancedMap = true
     if header.gameVersion < 13:
       result.setup.legacyLaunches = true
     if header.gameVersion < 7:

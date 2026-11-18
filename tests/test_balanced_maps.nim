@@ -1,4 +1,4 @@
-import std/[algorithm, os]
+import std/[algorithm, base64, os, sets]
 import jsony, polyworld/tapes
 import galcon/[common, worlds, replays, options, multiplayer]
 
@@ -33,24 +33,26 @@ proc testMaps() =
         let setup = configuredSetup(seed, Easy, players, count)
         setup.balancedMap = true
         let world = newWorld(setup)
-        var sizes: array[4, seq[int]]
-        var production: array[4, int]
+        doAssert world.planets.len == count
+        type Profile = tuple[radius, production, defenders: int]
+        var profiles, neutrals: array[4, seq[Profile]]
+        var homeCounts: array[4, int]
         var homes: array[MaxPlayers + 1, int]
         for i, p in world.planets:
-          sizes[p.quadrant()].add p.radius
+          let profile = (p.radius, p.production, p.shipCount)
+          profiles[p.quadrant()].add profile
           doAssert world.bodies[p.body].radius == fixed(p.radius.int32),
             "Collision radii follow the balanced planet size"
-          production[p.quadrant()] += p.production
           doAssert p.x >= fixed((8 + p.radius).int32)
           doAssert p.x <= fixed((Width - 8 - p.radius).int32)
           doAssert p.y >= fixed((40 + p.radius).int32)
           doAssert p.y <= fixed((Height - 40 - p.radius).int32)
           if p.owner > 0:
             inc homes[p.owner]
-            doAssert p.x <= fixed(64) or p.x >= fixed(Width - 64) or
-              p.y <= fixed(80) or p.y >= fixed(Height - 80), "Homes stay on the perimeter"
+            inc homeCounts[p.quadrant()]
             doAssert p.production == 100 and p.shipCount == 100
           else:
+            neutrals[p.quadrant()].add profile
             doAssert p.morale == 50 and p.realMorale == 50,
               "Matching home sizes must not give neutral planets home morale"
           for j in 0 ..< i:
@@ -61,32 +63,41 @@ proc testMaps() =
             doAssert dx * dx + dy * dy >= gap * gap
             if p.owner > 0 and other.owner > 0:
               doAssert dx * dx + dy * dy >= 80 * 80,
-                "Perimeter homes remain separated even with sixteen players"
+                "Homes remain separated even with sixteen players"
         for owner in 1 .. players: doAssert homes[owner] == 1
         var minimum = count
         var maximum = 0
         for q in 0 ..< 4:
-          sizes[q].sort()
-          minimum = min(minimum, sizes[q].len)
-          maximum = max(maximum, sizes[q].len)
+          profiles[q].sort()
+          neutrals[q].sort()
+          minimum = min(minimum, profiles[q].len)
+          maximum = max(maximum, profiles[q].len)
         doAssert maximum - minimum <= 1, "Quadrant populations differ by at most one"
-        var fullGroupSizes: seq[int]
+        var fullGroups: seq[Profile]
         for q in 0 ..< 4:
-          if sizes[q].len == minimum:
-            if fullGroupSizes.len == 0: fullGroupSizes = sizes[q]
-            else: doAssert sizes[q] == fullGroupSizes
+          if profiles[q].len == minimum:
+            if fullGroups.len == 0: fullGroups = profiles[q]
+            else: doAssert profiles[q] == fullGroups
         for q in 0 ..< 4:
-          if sizes[q].len > minimum:
+          if profiles[q].len > minimum:
             var matched = false
-            for extra in 0 ..< sizes[q].len:
-              var withoutExtra = sizes[q]
+            for extra in 0 ..< profiles[q].len:
+              var withoutExtra = profiles[q]
               withoutExtra.delete(extra)
-              if withoutExtra == fullGroupSizes: matched = true
-            doAssert matched, "Only the unavoidable remainder may differ in size"
+              if withoutExtra == fullGroups: matched = true
+            doAssert matched,
+              "Only the unavoidable remainder may differ in size, production or defenders"
         if count mod 4 == 0:
           for q in 1 ..< 4:
-            doAssert sizes[q] == sizes[0], "Actual planet radii match across quadrants"
-            doAssert production[q] == production[0], "Actual production matches including homes"
+            doAssert profiles[q] == profiles[0],
+              "Sizes, production and defending ships match across quadrants"
+        for q in 0 ..< 4:
+          for r in 0 ..< q:
+            doAssert abs(homeCounts[q] - homeCounts[r]) <= 1,
+              "Home counts are balanced between quadrants"
+            if profiles[q].len == profiles[r].len and homeCounts[q] == homeCounts[r]:
+              doAssert neutrals[q] == neutrals[r],
+                "Quadrants with equal home counts have identical neutral capture costs"
         doAssert world.fingerprint() == newWorld(setup.clone()).fingerprint()
   for players in [2, 4]:
     let setup = configuredSetup(8, Easy, players, 32)
@@ -95,10 +106,43 @@ proc testMaps() =
     var quadrants: seq[int]
     for p in world.planets:
       if p.owner > 0:
-        doAssert (p.x <= fixed(64) or p.x >= fixed(Width - 64)) and
-          (p.y <= fixed(80) or p.y >= fixed(Height - 80))
         quadrants.add p.quadrant()
     if players == 2: doAssert (quadrants[0] xor quadrants[1]) == 3
+
+proc testMapVariation() =
+  ## Sample a seed family without prescribing any particular planet position.
+  var homeX, homeY: HashSet[int]
+  var interiorHomes, variedMaps: int
+  for seed in 0 ..< 24:
+    let setup = configuredSetup(seed.int32, Easy, 4, 32)
+    setup.balancedMap = true
+    let world = newWorld(setup)
+    var xs, ys: HashSet[int]
+    var nearestDistances: HashSet[int64]
+    for i, p in world.planets:
+      let x = p.x.toInt.int
+      let y = p.y.toInt.int
+      xs.incl x
+      ys.incl y
+      if p.owner > 0:
+        homeX.incl min(x, Width - x)
+        homeY.incl min(y, Height - y)
+        if x > 96 and x < Width - 96 and y > 112 and y < Height - 112:
+          inc interiorHomes
+      var nearest = int64.high
+      for j, other in world.planets:
+        if i == j: continue
+        let dx = (x - other.x.toInt).int64
+        let dy = (y - other.y.toInt).int64
+        nearest = min(nearest, dx * dx + dy * dy)
+      nearestDistances.incl nearest
+    if xs.len > 16 and ys.len > 16 and nearestDistances.len > 8:
+      inc variedMaps
+  doAssert interiorHomes >= 12, "Home planets also occupy the quadrant interiors"
+  doAssert homeX.len > 24 and homeY.len > 24,
+    "Different seeds vary home locations in both dimensions"
+  doAssert variedMaps >= 20,
+    "Planet coordinates and neighbor distances should not form a rigid lattice"
 
 proc testReplay() =
   for balanced in [false, true]:
@@ -124,6 +168,8 @@ proc testReplay() =
     doAssert readFile(path).replayFileHeader().gameVersion == ReplayVersion
     let loaded = loadRecording(path)
     doAssert loaded.setup.balancedMap == balanced, "Map mode survives replay serialization"
+    doAssert not loaded.setup.legacyBalancedMap,
+      "New recordings retain varied placement when saved and loaded"
     doAssert loaded.hashes == tape.hashes
     let playback = newWorld(loaded.setup)
     var cursor = 0
@@ -179,6 +225,39 @@ proc testLegacyReplay() =
     doAssert playback.fingerprint() == world.fingerprint()
     removeFile(file)
 
+proc testLegacyBalancedReplay() =
+  ## Captured before varied placement: v20, seed17/Easy/4 players/32 planets.
+  const
+    InitialHash = 4588863931359644885'u64
+    FinalHash = 12458984394461214843'u64
+    Fixture =
+      "UE9MWVdPUkxEUkVQTEFZAgAUAAYAZ2FsY29uEQAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAUAAAAA" &
+      "AAAAHAAAAAAAAAABAAAAAAAAAAEAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAB" &
+      "AQAAAAAAAAAAIAAAAAAAAAB66R69JhkHZvwONDDdDD/v698lpSwi/iF3flAQZxrGSp0JsW0u6MDoUPvx" &
+      "JFcg7Bq6M6Gi/koKNeJlc7CxanugJAus6xa9ua68F3kqBhiASJBUNARmNqTtMukjT9cvu/tq8H9iU1Dj" &
+      "9rbrxrfN+N3aB9vTU/HgFWB5qJxLNN+c/ZHudOafqLj7p+iCyi6dmz8N4W6lsIgtjs/kSbKOiyjPmZtt" &
+      "5u9Ew7sNn3rWzdPe2JWfyoDHSZHyYvN0DLCq6JlEju9pYmz9/0A+hBxnIssZdZbnpKI+RFHwAxG39n/f" &
+      "2oXlySG8ESCKj+8v/B0t6jbX3a0Dpy0Rknv4/tVLNOesAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAA"
+  let path = Root / "build/balanced-legacy20.replay"
+  let copy = Root / "build/balanced-legacy-upgraded.replay"
+  writeFile(path, base64.decode(Fixture))
+  doAssert readFile(path).replayFileHeader().gameVersion == 20
+  let loaded = loadRecording(path)
+  doAssert loaded.setup.balancedMap and loaded.setup.legacyBalancedMap
+  doAssert loaded.setup.clone().legacyBalancedMap
+  loaded.save(copy)
+  for file in [path, copy]:
+    let tape = loadRecording(file)
+    doAssert tape.setup.balancedMap and tape.setup.legacyBalancedMap
+    let world = newWorld(tape.setup)
+    doAssert world.fingerprint() == InitialHash,
+      "Historical balanced maps retain their initial positions and RNG state"
+    var cursor = 0
+    for tick in 0 ..< tape.hashes.len: tape.replayTick(world, cursor)
+    doAssert tape.hashes.len == 32 and world.fingerprint() == FinalHash,
+      "Old balanced replays retain exact playback after upgrading the file"
+    removeFile(file)
+
 proc testLegacyFingerprints() =
   # Captured from HEAD 135afd6 using its common/worlds/physics/spaces sources.
   const Expected = [
@@ -198,9 +277,11 @@ proc testBalancedMaps*() =
   testLegacyFingerprints()
   testConfig()
   testMaps()
+  testMapVariation()
   testReplay()
   testLegacyReplay()
+  testLegacyBalancedReplay()
 
 when isMainModule:
   testBalancedMaps()
-  echo "Balanced configuration, quadrant production/sizes, perimeter homes, seeds and passages passed"
+  echo "Balanced configuration, quadrant profiles, varied home locations, seeds and passages passed"
