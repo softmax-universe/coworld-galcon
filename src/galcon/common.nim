@@ -108,10 +108,19 @@ type
   Order* = object
     tick*: int32
     player*, source*, target*, count*: int32
+    sequence*: uint64
   ChatMessage* = object
     tick*, player*: int32
+    sequence*: uint64
     length*: int
     text*: array[MaxChatBytes, char]
+  ActionKind* = enum
+    ActionLaunch, ActionChat
+  Action* = object
+    kind*: ActionKind
+    tick*, player*: int32
+    source*, target*, count*: int32
+    text*: string
   Setup* = ref object
     seed*: int32
     difficulty*: Difficulty
@@ -174,6 +183,8 @@ type
     bodyCursor*, activeShips*: int
     endWait*, winner*, revision*, captures*, impacts*: int
     orders*: seq[Order]
+    actionSequence*: uint64
+      ## Acceptance order spans fleet commands and chat, including checkpoints.
     pendingLaunches*: array[MaxPendingLaunches, Order]
     pendingLaunchCount*: int
       ## FIFO escrow: accepted stocks are deducted once, before rim retries.

@@ -119,11 +119,12 @@ proc testChats*() =
     unread = live.chat.inboxes[1].count
     decisions = live.brains[1].decisions
   doAssert live.world.chatCount == MaxChatLines
-  doAssert live.recording.chats.len == 20
-  for i, message in live.recording.chats:
+  doAssert live.recording.actions.len == 20
+  for i, message in live.recording.actions:
+    doAssert message.kind == ActionChat
     doAssert message.tick == (i div 2 * 32).int32
     doAssert message.player == (if i mod 2 == 0: 2 else: 1)
-    doAssert message.chatText() == "Ready."
+    doAssert message.text == "Ready."
   doAssert live.brains[2].runtime.getStringGlobal("name$") == "Red"
   doAssert live.brains[2].runtime.getStringGlobal("color$") == "Red"
   doAssert live.brains[2].runtime.getStringGlobal("addressColor$") == "Red"
@@ -144,13 +145,26 @@ proc testChats*() =
   live.finish()
   let playback = newSession(parseOptions(@["--headless", "--replay", path]))
   doAssert playback.displayName(2) == "Andre Bot"
-  doAssert playback.replay.chats == live.recording.chats
+  doAssert playback.replay.actions == live.recording.actions
   playback.seek(300)
   doAssert playback.world.fingerprint() == hash
   playback.seek(33)
   doAssert playback.world.chatCount == 4
   playback.seek(300)
   doAssert playback.world.fingerprint() == hash
+  for tick in [129'i32, 161, 257, 289]:
+    var accepted = 0'u64
+    for action in live.recording.actions:
+      if action.tick < tick:
+        inc accepted
+    live.seek(tick)
+    playback.seek(tick)
+    doAssert live.world.actionSequence == accepted
+    doAssert playback.world.actionSequence == accepted,
+      "Restored checkpoints retain the acceptance ordinal for later chat"
+    doAssert playback.world.fingerprint() == live.world.fingerprint()
+  live.returnToLive()
+  playback.seek(300)
   playback.names[2] = "Another Bot"
   doAssert playback.world.fingerprint() == hash
   removeFile(path)
@@ -160,19 +174,19 @@ proc testChats*() =
     let damaged = live.recording.clone()
     case change
     of 0:
-      damaged.chats.setLen(0)
+      damaged.actions.setLen(0)
     of 1:
-      damaged.chats.delete(0)
+      damaged.actions.delete(0)
     of 2:
-      damaged.chats[0].text[0] = 'X'
+      damaged.actions[0].text[0] = 'X'
     of 3:
-      swap(damaged.chats[0], damaged.chats[1])
+      swap(damaged.actions[0], damaged.actions[1])
     else:
-      damaged.chats[0].tick = 1
-      damaged.chats[1].tick = 1
+      damaged.actions[0].tick = 1
+      damaged.actions[1].tick = 1
     damaged.expectChatDivergence(0)
   let missingLater = live.recording.clone()
-  missingLater.chats.delete(10)
+  missingLater.actions.delete(10)
   missingLater.expectChatDivergence(160)
 
   echo "Human chat and the bot orders it triggers survive saves and seeking"
@@ -195,19 +209,23 @@ proc testChats*() =
         doAssert live.chat.sendChat(1, -2, " Go 空🙂\n") == 2
       live.step()
     doAssert not live.brains[2].failed, live.brains[2].error
-    doAssert live.recording.chats.len == 2
-    doAssert live.recording.chats[0].player == 1
-    doAssert live.recording.chats[0].tick == 7
-    doAssert live.recording.chats[0].chatText() == "Go 空🙂"
-    doAssert live.recording.chats[1].player == 2
-    doAssert live.recording.chats[1].tick == 7
-    doAssert live.recording.chats[1].chatText() == "On my way 空🙂"
-    doAssert live.recording.orders.len == 1
-    doAssert live.recording.orders[0].tick == 7
-    doAssert live.recording.orders[0].player == 2
-    doAssert live.recording.orders[0].count == 3
+    doAssert live.recording.actions.len == 3
+    let actions = live.recording.actions
+    doAssert actions[0].kind == ActionChat and actions[0].player == 1
+    doAssert actions[0].text == "Go 空🙂"
+    doAssert actions[1].kind == ActionLaunch and actions[1].player == 2
+    doAssert actions[1].count == 3
+    doAssert actions[2].kind == ActionChat and actions[2].player == 2
+    doAssert actions[2].text == "On my way 空🙂"
+    for action in actions:
+      doAssert action.tick == 7
+    for first in 0 .. 1:
+      let reordered = live.recording.clone()
+      swap(reordered.actions[first], reordered.actions[first + 1])
+      reordered.expectChatDivergence(7)
     let playback = newSession(parseOptions(@["--headless", "--replay", path]))
-    doAssert playback.replay.chats == live.recording.chats
+    doAssert playback.replay.actions == live.recording.actions,
+      "The saved tape preserves chat, launch, chat in original acceptance order"
     for brain in playback.brains:
       doAssert brain == nil, "Playback must use recorded bot orders"
     for tick in [300'i32, 7, 8, 129, 0, 256, 300]:
@@ -218,10 +236,12 @@ proc testChats*() =
       for i in 0 ..< playback.world.chatCount:
         let
           actual = playback.world.chats[i]
-          expected = live.recording.chats[i]
+          expected = live.recording.actions[i * 2]
         doAssert actual.tick == expected.tick
         doAssert actual.player == expected.player
-        doAssert actual.chatText() == expected.chatText()
+        doAssert actual.chatText() == expected.text
+        doAssert actual.sequence == (i * 2).uint64,
+          "The visible chat retains its position around the intervening launch"
     live.seek(0)
     live.saveRecording(path)
-    doAssert loadRecording(path).chats == live.recording.chats
+    doAssert loadRecording(path).actions == live.recording.actions

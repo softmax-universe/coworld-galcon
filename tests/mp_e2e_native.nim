@@ -255,7 +255,7 @@ proc main() =
     v.handleInput()
     check("client " & $i & " order waits for relay authority", w.tick == beforeTick and w.fingerprint() == beforeHash)
     frames()
-    awaitState("client " & $i & " relay records launch", v.session.recording.orders.anyIt(it.player == v.session.human.int32 and it.source == source.int32 and it.target == target.int32))
+    awaitState("client " & $i & " relay records launch", v.session.recording.actions.anyIt(it.kind == ActionLaunch and it.player == v.session.human.int32 and it.source == source.int32 and it.target == target.int32))
     var body = -1
     for j,b in w.bodies:
       if b.active and b.kind == ShipBody and w.ships[j].owner == v.session.human: body = j; break
@@ -271,7 +271,7 @@ proc main() =
     # Real Silky slider and right-button callback, without advancing authority.
     point(i,board(w.planets[target]))
     let percentHash = w.fingerprint()
-    let percentOrders = v.session.recording.orders.len
+    let percentOrders = v.session.recording.actions.countIt(it.kind == ActionLaunch)
     let percentOutbox = v.front.connection.client.outgoing
     let percentTick = w.tick
     v.transport.player.playing = false
@@ -310,7 +310,7 @@ proc main() =
     point(i,board(w.planets[target]))
     check("client " & $i & " percentage is local despite delayed/paused transport",
       w.tick == percentTick and w.fingerprint() == percentHash and
-      v.session.recording.orders.len == percentOrders and
+      v.session.recording.actions.countIt(it.kind == ActionLaunch) == percentOrders and
       v.front.connection.client.outgoing == percentOutbox)
     v.window.state.perFrame = PerFrame()
     v.window.press(Key3)
@@ -326,13 +326,13 @@ proc main() =
     v.transport.player.playing = true
     v.transport.player.targetTick = -1
     v.window.state.perFrame = PerFrame()
-    let ordersBefore = v.session.recording.orders.len
+    let ordersBefore = v.session.recording.actions.countIt(it.kind == ActionLaunch)
     let hashBeforeRight = w.fingerprint()
     let commandsBefore = v.front.connection.client.outgoing.len
     v.window.press(MouseRight)
     v.handleInput()
     check("client " & $i & " right down only previews, without queued command",
-      w.fingerprint() == hashBeforeRight and v.session.recording.orders.len == ordersBefore and
+      w.fingerprint() == hashBeforeRight and v.session.recording.actions.countIt(it.kind == ActionLaunch) == ordersBefore and
       v.controls.selected[source] and v.controls.holding and
       v.front.connection.client.outgoing.len == commandsBefore)
     v.window.state.perFrame = PerFrame()
@@ -341,12 +341,12 @@ proc main() =
     let heldTick = w.tick
     awaitState("held preview across authoritative ticks", w.tick >= heldTick + 4)
     check("client " & $i & " holding never dispatches a command",
-      v.session.recording.orders.len == ordersBefore and v.controls.holding)
+      v.session.recording.actions.countIt(it.kind == ActionLaunch) == ordersBefore and v.controls.holding)
     point(i, vec2(-2000, -2000))
     frames()
     check("client " & $i & " fleet hold survives outside window without orders",
       v.controls.holding and v.controls.hover == -1 and
-      v.session.recording.orders.len == ordersBefore)
+      v.session.recording.actions.countIt(it.kind == ActionLaunch) == ordersBefore)
     point(i, board(w.planets[target]))
     frames()
     check("client " & $i & " fleet reentry restores valid target",
@@ -359,7 +359,7 @@ proc main() =
     v.window.release(MouseRight)
     v.handleInput()
     check("client " & $i & " release queues once without speculative mutation",
-      w.fingerprint() == releaseHash and v.session.recording.orders.len == ordersBefore and
+      w.fingerprint() == releaseHash and v.session.recording.actions.countIt(it.kind == ActionLaunch) == ordersBefore and
       not v.controls.holding and queuedOrders() == queuedBeforeRelease + 1)
     v.handleInput() # A consumed release cannot dispatch a duplicate intent.
     check("client " & $i & " duplicate release is idempotent",
@@ -374,21 +374,21 @@ proc main() =
     v.window.release(Key2)
     v.window.state.perFrame = PerFrame()
     frames()
-    awaitState("client " & $i & " relay records right-click launch", v.session.recording.orders.len > ordersBefore)
-    let rightOrder = v.session.recording.orders[^1]
+    awaitState("client " & $i & " relay records right-click launch", v.session.recording.actions.countIt(it.kind == ActionLaunch) > ordersBefore)
+    let rightOrder = v.session.recording.actions.filterIt(it.kind == ActionLaunch)[^1]
     check("client " & $i & " right-click records selected source and target", rightOrder.player == v.session.human.int32 and rightOrder.source == source.int32 and rightOrder.target == target.int32)
     let replayWorld = newWorld(v.session.recording.setup)
-    var orderCursor, chatCursor: int
+    var actionCursor: int
     while replayWorld.tick < rightOrder.tick:
-      v.session.recording.replayTick(replayWorld, orderCursor, chatCursor)
+      v.session.recording.replayTick(replayWorld, actionCursor)
     let expectedCount = roundedRatio(replayWorld.planets[source].ships * 70, FixedScale * 100).int32
     check("client " & $i & " authoritative accepted amount is exactly 70 percent", rightOrder.count == expectedCount and rightOrder.count > 0)
     echo "RIGHTCLICK client=",i," tick=",rightOrder.tick," percent=70 accepted=",rightOrder.count
     let afterRightTick = w.tick
     awaitState("right release settles", w.tick >= afterRightTick + 4)
     check("client " & $i & " exactly one right-release order accepted",
-      v.session.recording.orders.len == ordersBefore + 1)
-  awaitState("all peers recorded all human orders", clients.allIt(it.view.session.recording.orders.len >= ClientCount*2))
+      v.session.recording.actions.countIt(it.kind == ActionLaunch) == ordersBefore + 1)
+  awaitState("all peers recorded all human orders", clients.allIt(it.view.session.recording.actions.countIt(it.kind == ActionLaunch) >= ClientCount*2))
   for i in 0..<ClientCount:
     let v = clients[i].view
     button(i, KeyEnter, true)
@@ -406,18 +406,18 @@ proc main() =
     let before = v.session.liveWorld.fingerprint()
     v.window.press(KeyEnter)
     v.handleInput() # Queue before sockets pump: no speculative local echo.
-    check("client " & $i & " chat waits for authoritative relay", v.session.liveWorld.fingerprint() == before and v.session.recording.chats.len == i)
+    check("client " & $i & " chat waits for authoritative relay", v.session.liveWorld.fingerprint() == before and v.session.recording.actions.countIt(it.kind == ActionChat) == i)
     v.window.release(KeyEnter)
     v.window.state.perFrame = PerFrame() # This event was already consumed above.
     frames()
-    awaitState("every peer sees human chat " & $i, clients.allIt(it.view.session.recording.chats.len == i+1))
+    awaitState("every peer sees human chat " & $i, clients.allIt(it.view.session.recording.actions.countIt(it.kind == ActionChat) == i+1))
     for client in clients:
-      check("client receives exact shared chat " & $i, client.view.session.recording.chats[^1].chatText() == message and client.view.session.recording.chats[^1].player == v.session.human.int32)
+      check("client receives exact shared chat " & $i, client.view.session.recording.actions.filterIt(it.kind == ActionChat)[^1].text == message and client.view.session.recording.actions.filterIt(it.kind == ActionChat)[^1].player == v.session.human.int32)
     picture(i, "chat-received")
     button(i, KeyEnter, true); button(i, KeyEnter, false)
     text(i, "cancel this")
     button(i, KeyEscape, true); button(i, KeyEscape, false)
-    check("client " & $i & " Escape cancels without menu or chat", not v.chatting and v.chatInput.len == 0 and v.screen == GameScreen and v.session.recording.chats.len == i+1)
+    check("client " & $i & " Escape cancels without menu or chat", not v.chatting and v.chatInput.len == 0 and v.screen == GameScreen and v.session.recording.actions.countIt(it.kind == ActionChat) == i+1)
   awaitState("128 server-ordered ticks", min(host.session.liveWorld.tick,guest.session.liveWorld.tick) >= 128)
   var ticks = high(int)
   for client in clients: ticks = min(ticks,client.view.session.recording.hashes.len)
@@ -430,12 +430,12 @@ proc main() =
     let path = output / ($i & ".replay")
     recording.save(path)
     let tape = loadRecording(path)
-    check("client " & $i & " replay keeps each human chat exactly once", tape.chats.len == ClientCount and tape.chats == host.session.recording.chats)
+    check("client " & $i & " replay keeps each human chat exactly once", tape.actions.countIt(it.kind == ActionChat) == ClientCount and tape.actions == host.session.recording.actions)
     let world = newWorld(tape.setup)
-    var cursor,chatCursor: int
-    while world.tick < tape.hashes.len.int32: tape.replayTick(world,cursor,chatCursor)
-    echo "REPLAY client=",i," names=",tape.names," expected=",@names," orders=",tape.orders," hashes=",tape.hashes.len," final=",world.fingerprint()," expectedHash=",tape.hashes[^1]
-    check("client " & $i & " saved replay verifies every tick",world.fingerprint() == tape.hashes[^1] and tape.names == (if ClientCount == 3: @["",names[2],names[0],names[1]] else: @["", names[0], names[1]]) and tape.orders.anyIt(it.player == 1) and tape.orders.anyIt(it.player == 2))
+    var cursor: int
+    while world.tick < tape.hashes.len.int32: tape.replayTick(world,cursor)
+    echo "REPLAY client=",i," names=",tape.names," expected=",@names," actions=",tape.actions," hashes=",tape.hashes.len," final=",world.fingerprint()," expectedHash=",tape.hashes[^1]
+    check("client " & $i & " saved replay verifies every tick",world.fingerprint() == tape.hashes[^1] and tape.names == (if ClientCount == 3: @["",names[2],names[0],names[1]] else: @["", names[0], names[1]]) and tape.actions.anyIt(it.kind == ActionLaunch and it.player == 1) and tape.actions.anyIt(it.kind == ActionLaunch and it.player == 2))
   echo "RESULT PASS clients=",ClientCount," checks=",checks," peerTicks=",ticks," room=",room," native real input frontend, not browser"
 
 try: main()

@@ -4,158 +4,60 @@ import
   common, worlds, profiles, chats
 
 const
-  ReplayVersion* = 21'u16
+  ReplayVersion* = 22'u16
   MaxTicks* = TickRate * 60 * 30
   MaxOrders* = 1_000_000
 
 type
-  LegacySetup = object
-    seed: int32
-    difficulty: Difficulty
-    tutorial: int
-    counts: array[3, int]
-  LegacyRecording = object
-    setup: LegacySetup
-    orders: seq[Order]
-    hashes: seq[uint64]
-  SetupData = object
-    ## Version 2 wire fields remain values to preserve existing replay bytes.
-    seed: int32
-    difficulty: Difficulty
-    tutorial: int
-    players: int
-    counts: seq[int]
   RecordingData = object
-    ## Serialized fields are assembled only at the file boundary.
-    setup: SetupData
-    orders: seq[Order]
+    setup: Setup
+    actions: seq[Action]
     hashes: seq[uint64]
-  SpatialRecordingData = object
-    setup: SetupData
-    collisions: CollisionKind
-    orders: seq[Order]
-    hashes: seq[uint64]
-  ChatRecordingData = object
-    setup: SetupData
-    collisions: CollisionKind
-    orders: seq[Order]
-    hashes: seq[uint64]
-    chats: seq[ChatMessage]
-  NamedRecordingData = object
-    setup: SetupData
-    collisions: CollisionKind
-    orders: seq[Order]
-    hashes: seq[uint64]
-    chats: seq[ChatMessage]
     names: seq[string]
-  RulesRecordingData = object
-    setup: SetupData
-    collisions: CollisionKind
-    placement: Placement
-    enemyShipsPassThrough: bool
-    neutralsDontProduce: bool
-    orders: seq[Order]
-    hashes: seq[uint64]
-    chats: seq[ChatMessage]
-    names: seq[string]
-  PendingRecordingData = object
-    rules: RulesRecordingData
-    legacyLaunches: bool
-  BalancedRecordingData = object
-    pending: PendingRecordingData
-    balancedMap: bool
-  FlockingRecordingData = object
-    balanced: BalancedRecordingData
-    legacyMovement: bool
-  FlowRecordingData = object
-    flocking: FlockingRecordingData
-    legacyFlocking: bool
-  ContactRecordingData = object
-    flow: FlowRecordingData
-    legacyContacts: bool
-  RouteRecordingData = object
-    contacts: ContactRecordingData
-    legacyRouteSteering: bool
-  CrossingRecordingData = object
-    routes: RouteRecordingData
-    legacyCrossings: bool
-  EscapeRecordingData = object
-    crossings: CrossingRecordingData
-    legacyDeadlocks: bool
-  LayoutRecordingData = object
-    escape: EscapeRecordingData
-    legacyBalancedMap: bool
   Recording* = ref object
     setup*: Setup
-    orders*: seq[Order]
+    actions*: seq[Action]
     hashes*: seq[uint64]
-    chats*: seq[ChatMessage]
     names*: seq[string]
       ## Viewer metadata never enters simulation state or the BASIC host.
+    launches, messages: int
 
 proc recordTick*(recording: Recording, world: World) {.measure.} =
-  ## Records accepted launches, chat, and their resulting hash for one tick.
+  ## Keeps the acceptance order of launches and chat in one replay stream.
   if recording.hashes.len >= MaxTicks:
     raise newException(GalconError, "Replay exceeds the 30-minute limit")
-  for order in world.orders:
-    if recording.orders.len >= MaxOrders:
-      raise newException(GalconError, "Replay has too many orders")
-    recording.orders.add order
+  var order, message: int
+  while order < world.orders.len or message < world.chatOrderCount:
+    if message == world.chatOrderCount or
+      (order < world.orders.len and
+        world.orders[order].sequence < world.chatOrders[message].sequence):
+        if recording.launches >= MaxOrders:
+          raise newException(GalconError, "Replay has too many fleet orders")
+        let accepted = world.orders[order]
+        recording.actions.add Action(kind: ActionLaunch,
+          tick: accepted.tick, player: accepted.player,
+          source: accepted.source, target: accepted.target,
+          count: accepted.count)
+        inc recording.launches
+        inc order
+    else:
+      if recording.messages >= MaxReplayChats:
+        raise newException(GalconError, "Replay has too many chat messages")
+      let accepted = world.chatOrders[message]
+      recording.actions.add Action(kind: ActionChat,
+        tick: accepted.tick, player: accepted.player, text: accepted.chatText())
+      inc recording.messages
+      inc message
   world.orders.setLen(0)
-  for i in 0 ..< world.chatOrderCount:
-    if recording.chats.len >= MaxReplayChats:
-      raise newException(GalconError, "Replay has too many chat messages")
-    recording.chats.add world.chatOrders[i]
   world.chatOrderCount = 0
   recording.hashes.add world.fingerprint()
 
 proc save*(recording: Recording, path: string) =
-  ## Writes a replay using Polyworld's versioned portable file format.
+  ## Writes the current action stream behind Polyworld's portable file header.
   try:
-    let data = RulesRecordingData(
-      setup: SetupData(
-        seed: recording.setup.seed,
-        difficulty: recording.setup.difficulty,
-        tutorial: recording.setup.tutorial,
-        players: recording.setup.players,
-        counts: recording.setup.counts
-      ),
-      collisions: recording.setup.collisions,
-      placement: recording.setup.placement,
-      enemyShipsPassThrough: recording.setup.enemyShipsPassThrough,
-      neutralsDontProduce: recording.setup.neutralsDontProduce,
-      orders: recording.orders,
-      hashes: recording.hashes,
-      chats: recording.chats,
-      names: recording.names
-    )
-    let flow = FlowRecordingData(
-      flocking: FlockingRecordingData(
-        balanced: BalancedRecordingData(
-          pending: PendingRecordingData(
-            rules: data, legacyLaunches: recording.setup.legacyLaunches
-          ),
-          balancedMap: recording.setup.balancedMap
-        ),
-        legacyMovement: recording.setup.legacyMovement
-      ),
-      legacyFlocking: recording.setup.legacyFlocking
-    )
-    let escape = EscapeRecordingData(
-      crossings: CrossingRecordingData(
-        routes: RouteRecordingData(
-          contacts: ContactRecordingData(
-            flow: flow, legacyContacts: recording.setup.legacyContacts
-          ),
-          legacyRouteSteering: recording.setup.legacyRouteSteering
-        ),
-        legacyCrossings: recording.setup.legacyCrossings
-      ),
-      legacyDeadlocks: recording.setup.legacyDeadlocks
-    )
-    saveReplayFile(path, "galcon", ReplayVersion, LayoutRecordingData(
-      escape: escape,
-      legacyBalancedMap: recording.setup.legacyBalancedMap
+    saveReplayFile(path, "galcon", ReplayVersion, RecordingData(
+      setup: recording.setup, actions: recording.actions,
+      hashes: recording.hashes, names: recording.names
     ))
   except IOError, OSError, ReplayError:
     raise newException(
@@ -164,237 +66,25 @@ proc save*(recording: Recording, path: string) =
     )
 
 proc loadRecording*(path: string): Recording =
-  ## Validates a Polyworld Galcon replay before starting playback.
-  var legacyHashes = false
+  ## Rejects obsolete layouts and validates one ordered sequence of actions.
   try:
-    result = Recording()
-    let
-      bytes = readFile(path)
-      header = bytes.replayFileHeader()
-    legacyHashes = header.gameVersion < 6
-    if header.gameVersion == 1:
-      let legacy = decodeReplayFile("galcon", 1, bytes, LegacyRecording)
-      result.setup = Setup(
-        seed: legacy.setup.seed,
-        difficulty: legacy.setup.difficulty,
-        tutorial: legacy.setup.tutorial,
-        players: 2,
-        collisions: AllPairs,
-        counts: @(legacy.setup.counts)
-      )
-      result.orders = legacy.orders
-      result.hashes = legacy.hashes
-    elif header.gameVersion == 2:
-      let data = decodeReplayFile("galcon", 2, bytes, RecordingData)
-      result.setup = Setup(
-        seed: data.setup.seed,
-        difficulty: data.setup.difficulty,
-        tutorial: data.setup.tutorial,
-        players: data.setup.players,
-        collisions: AllPairs,
-        counts: data.setup.counts
-      )
-      result.orders = data.orders
-      result.hashes = data.hashes
-    elif header.gameVersion == 3:
-      let data = decodeReplayFile(
-        "galcon", 3, bytes, SpatialRecordingData
-      )
-      result.setup = Setup(
-        seed: data.setup.seed,
-        difficulty: data.setup.difficulty,
-        tutorial: data.setup.tutorial,
-        players: data.setup.players,
-        collisions: data.collisions,
-        counts: data.setup.counts
-      )
-      result.orders = data.orders
-      result.hashes = data.hashes
-    elif header.gameVersion == 4:
-      let data = decodeReplayFile(
-        "galcon", 4, bytes, ChatRecordingData
-      )
-      result.setup = Setup(
-        seed: data.setup.seed,
-        difficulty: data.setup.difficulty,
-        tutorial: data.setup.tutorial,
-        players: data.setup.players,
-        collisions: data.collisions,
-        counts: data.setup.counts
-      )
-      result.orders = data.orders
-      result.hashes = data.hashes
-      result.chats = data.chats
-    elif header.gameVersion in [5'u16, 6'u16]:
-      let data = decodeReplayFile(
-        "galcon",
-        header.gameVersion,
-        bytes,
-        NamedRecordingData
-      )
-      result.setup = Setup(
-        seed: data.setup.seed,
-        difficulty: data.setup.difficulty,
-        tutorial: data.setup.tutorial,
-        players: data.setup.players,
-        collisions: data.collisions,
-        counts: data.setup.counts
-      )
-      result.orders = data.orders
-      result.hashes = data.hashes
-      result.chats = data.chats
-      result.names = data.names
-    else:
-      var
-        data: RulesRecordingData
-        legacyLaunches = header.gameVersion == 12
-        balancedMap = false
-        legacyBalancedMap = true
-        legacyMovement = true
-        legacyFlocking = true
-        legacyContacts = true
-        legacyRouteSteering = true
-        legacyCrossings = true
-        legacyDeadlocks = true
-      if header.gameVersion == 12:
-        data = decodeReplayFile("galcon", 12, bytes, RulesRecordingData)
-      elif header.gameVersion == 13:
-        let current = decodeReplayFile(
-          "galcon", 13, bytes, PendingRecordingData)
-        data = current.rules
-        legacyLaunches = current.legacyLaunches
-      elif header.gameVersion == 14:
-        let current = decodeReplayFile(
-          "galcon", 14, bytes, BalancedRecordingData)
-        data = current.pending.rules
-        legacyLaunches = current.pending.legacyLaunches
-        balancedMap = current.balancedMap
-      elif header.gameVersion == 15:
-        let current = decodeReplayFile(
-          "galcon", 15, bytes, FlockingRecordingData
-        )
-        data = current.balanced.pending.rules
-        legacyLaunches = current.balanced.pending.legacyLaunches
-        balancedMap = current.balanced.balancedMap
-        legacyMovement = current.legacyMovement
-      elif header.gameVersion == 16:
-        let current = decodeReplayFile(
-          "galcon", 16, bytes, FlowRecordingData
-        )
-        data = current.flocking.balanced.pending.rules
-        legacyLaunches = current.flocking.balanced.pending.legacyLaunches
-        balancedMap = current.flocking.balanced.balancedMap
-        legacyMovement = current.flocking.legacyMovement
-        legacyFlocking = current.legacyFlocking
-      elif header.gameVersion == 17:
-        let current = decodeReplayFile(
-          "galcon", 17, bytes, ContactRecordingData
-        )
-        data = current.flow.flocking.balanced.pending.rules
-        legacyLaunches = current.flow.flocking.balanced.pending.legacyLaunches
-        balancedMap = current.flow.flocking.balanced.balancedMap
-        legacyMovement = current.flow.flocking.legacyMovement
-        legacyFlocking = current.flow.legacyFlocking
-        legacyContacts = current.legacyContacts
-      elif header.gameVersion == 18:
-        let current = decodeReplayFile(
-          "galcon", 18, bytes, RouteRecordingData
-        )
-        let contacts = current.contacts
-        data = contacts.flow.flocking.balanced.pending.rules
-        legacyLaunches = contacts.flow.flocking.balanced.pending.legacyLaunches
-        balancedMap = contacts.flow.flocking.balanced.balancedMap
-        legacyMovement = contacts.flow.flocking.legacyMovement
-        legacyFlocking = contacts.flow.legacyFlocking
-        legacyContacts = contacts.legacyContacts
-        legacyRouteSteering = current.legacyRouteSteering
-      elif header.gameVersion == 19:
-        let current = decodeReplayFile(
-          "galcon", 19, bytes, CrossingRecordingData
-        )
-        let contacts = current.routes.contacts
-        data = contacts.flow.flocking.balanced.pending.rules
-        legacyLaunches = contacts.flow.flocking.balanced.pending.legacyLaunches
-        balancedMap = contacts.flow.flocking.balanced.balancedMap
-        legacyMovement = contacts.flow.flocking.legacyMovement
-        legacyFlocking = contacts.flow.legacyFlocking
-        legacyContacts = contacts.legacyContacts
-        legacyRouteSteering = current.routes.legacyRouteSteering
-        legacyCrossings = current.legacyCrossings
-      else:
-        var current: EscapeRecordingData
-        if header.gameVersion == 20:
-          current = decodeReplayFile("galcon", 20, bytes, EscapeRecordingData)
-        else:
-          let layout = decodeReplayFile(
-            "galcon", ReplayVersion, bytes, LayoutRecordingData
-          )
-          current = layout.escape
-          legacyBalancedMap = layout.legacyBalancedMap
-        let
-          crossings = current.crossings
-          contacts = crossings.routes.contacts
-        data = contacts.flow.flocking.balanced.pending.rules
-        legacyLaunches = contacts.flow.flocking.balanced.pending.legacyLaunches
-        balancedMap = contacts.flow.flocking.balanced.balancedMap
-        legacyMovement = contacts.flow.flocking.legacyMovement
-        legacyFlocking = contacts.flow.legacyFlocking
-        legacyContacts = contacts.legacyContacts
-        legacyRouteSteering = crossings.routes.legacyRouteSteering
-        legacyCrossings = crossings.legacyCrossings
-        legacyDeadlocks = current.legacyDeadlocks
-      result.setup = Setup(
-        seed: data.setup.seed,
-        difficulty: data.setup.difficulty,
-        tutorial: data.setup.tutorial,
-        players: data.setup.players,
-        collisions: data.collisions,
-        placement: data.placement,
-        legacyLaunches: legacyLaunches,
-        balancedMap: balancedMap,
-        legacyBalancedMap: legacyBalancedMap,
-        legacyMovement: legacyMovement,
-        legacyFlocking: legacyFlocking,
-        legacyContacts: legacyContacts,
-        legacyRouteSteering: legacyRouteSteering,
-        legacyCrossings: legacyCrossings,
-        legacyDeadlocks: legacyDeadlocks,
-        enemyShipsPassThrough: data.enemyShipsPassThrough,
-        neutralsDontProduce: data.neutralsDontProduce,
-        counts: data.setup.counts
-      )
-      result.orders = data.orders
-      result.hashes = data.hashes
-      result.chats = data.chats
-      result.names = data.names
-    if header.gameVersion < 15:
-      result.setup.legacyMovement = true
-    if header.gameVersion < 16:
-      result.setup.legacyFlocking = true
-    if header.gameVersion < 17:
-      result.setup.legacyContacts = true
-    if header.gameVersion < 18:
-      result.setup.legacyRouteSteering = true
-    if header.gameVersion < 19:
-      result.setup.legacyCrossings = true
-    if header.gameVersion < 20:
-      result.setup.legacyDeadlocks = true
-    if header.gameVersion < 21:
-      result.setup.legacyBalancedMap = true
-    if header.gameVersion < 13:
-      result.setup.legacyLaunches = true
-    if header.gameVersion < 7:
-      result.setup.placement = ClassicPlacement
-      result.setup.enemyShipsPassThrough = false
-      result.setup.neutralsDontProduce = false
+    let data = decodeReplayFile("galcon", ReplayVersion,
+      readFile(path), RecordingData)
+    result = Recording(setup: data.setup, actions: data.actions,
+      hashes: data.hashes, names: data.names)
   except IOError, OSError, ReplayError, ValueError, FlattyError, IndexDefect:
     raise newException(
       GalconError,
       "Cannot load replay: " & getCurrentExceptionMsg()
     )
-  if result.hashes.len > MaxTicks or result.orders.len > MaxOrders or
-    result.chats.len > MaxReplayChats:
-    raise newException(GalconError, "Replay limits exceeded")
+  if result.hashes.len > MaxTicks or
+    result.actions.len > MaxOrders + MaxReplayChats:
+      raise newException(GalconError, "Replay limits exceeded")
+  if result.setup == nil or
+    ord(result.setup.difficulty) notin ord(Easy) .. ord(Crazy) or
+    ord(result.setup.collisions) notin ord(AllPairs) .. ord(Grid64) or
+    ord(result.setup.placement) notin ord(RandomPlacement) .. ord(ClusteredPlacement):
+      raise newException(GalconError, "Invalid replay map settings")
   let world = newWorld(result.setup)
   if result.names.len notin [0, result.setup.players + 1]:
     raise newException(GalconError, "Replay names must match its player roster")
@@ -404,106 +94,78 @@ proc loadRecording*(path: string): Recording =
     for character in name:
       if character < ' ' or character == '\x7f':
         raise newException(GalconError, "Invalid replay player name")
-  var previous = -1'i32
-  for order in result.orders:
-    if order.tick < 0 or order.tick < previous or
-      order.tick >= result.hashes.len.int32 or
-      order.count <= 0 or
-      (result.setup.legacyLaunches and order.count > MaxBodies) or
-      order.player < 1 or order.player > result.setup.players.int32 or
-      not world.validPlanet(order.source.int) or
-      not world.validPlanet(order.target.int) or order.source == order.target:
-        raise newException(GalconError, "Invalid replay order")
-    previous = order.tick
-  previous = -1
-  var senders: array[MaxPlayers + 1, bool]
-  for message in result.chats:
-    if message.tick < 0 or message.tick < previous or
-      message.tick >= result.hashes.len.int32 or
-      message.player < 1 or message.player > result.setup.players.int32 or
-      message.length < 1 or message.length > MaxChatBytes - 16:
-        raise newException(GalconError, "Invalid replay chat message")
-    if message.tick != previous:
+  var
+    previous = -1'i32
+    senders: array[MaxPlayers + 1, bool]
+  for action in result.actions:
+    if ord(action.kind) notin ord(ActionLaunch) .. ord(ActionChat) or
+      action.tick < 0 or action.tick < previous or
+      action.tick >= result.hashes.len.int32 or
+      action.player < 1 or action.player > result.setup.players.int32:
+        raise newException(GalconError, "Invalid replay action")
+    if action.tick != previous:
       senders = default(typeof(senders))
-    if validateUtf8(message.text.toOpenArray(0, message.length - 1)) >= 0 or
-      message.text[0] == ' ' or message.text[message.length - 1] == ' ':
-        raise newException(GalconError, "Invalid replay chat text")
-    for i in 0 ..< message.length:
-      if message.text[i] < ' ' or message.text[i] == '\x7f':
-        raise newException(GalconError, "Invalid replay chat text")
-    if senders[message.player]:
-      raise newException(GalconError, "Duplicate replay chat sender")
-    senders[message.player] = true
-    previous = message.tick
-  if legacyHashes:
-    # Legacy fingerprints included particles, so migrate only gameplay hashes.
-    var
-      orders = 0
-      messages = 0
-    for tick in 0 ..< result.hashes.len:
-      while orders < result.orders.len and
-        result.orders[orders].tick == tick.int32:
-          let order = result.orders[orders]
-          if world.launch(order.player.int, order.source.int,
-            order.target.int, order.count.int) != order.count.int:
-              raise newException(GalconError, "Invalid legacy replay launch")
-          inc orders
-      while messages < result.chats.len and
-        result.chats[messages].tick == tick.int32:
-          let message = result.chats[messages]
-          discard world.addChat(message.player.int,
-            message.text.toOpenArray(0, message.length - 1))
-          inc messages
-      world.advance()
-      world.orders.setLen(0)
-      world.chatOrderCount = 0
-      result.hashes[tick] = world.fingerprint()
+    case action.kind
+    of ActionLaunch:
+      if action.count <= 0 or
+        (result.setup.legacyLaunches and action.count > MaxBodies) or
+        not world.validPlanet(action.source.int) or
+        not world.validPlanet(action.target.int) or
+        action.source == action.target or action.text.len > 0:
+          raise newException(GalconError, "Invalid replay fleet order")
+      inc result.launches
+    of ActionChat:
+      if action.source != 0 or action.target != 0 or action.count != 0 or
+        action.text.len < 1 or action.text.len > MaxChatBytes - 16 or
+        validateUtf8(action.text) >= 0 or action.text[0] == ' ' or
+        action.text[^1] == ' ':
+          raise newException(GalconError, "Invalid replay chat text")
+      for character in action.text:
+        if character < ' ' or character == '\x7f':
+          raise newException(GalconError, "Invalid replay chat text")
+      if senders[action.player]:
+        raise newException(GalconError, "Duplicate replay chat sender")
+      senders[action.player] = true
+      inc result.messages
+    previous = action.tick
+  if result.launches > MaxOrders or result.messages > MaxReplayChats:
+    raise newException(GalconError, "Replay limits exceeded")
 
 proc clone*(recording: Recording): Recording =
   ## Makes an explicit isolated tape copy for edits or validation experiments.
   result = Recording(
     setup: recording.setup.clone(),
-    orders: newSeq[Order](recording.orders.len),
+    actions: newSeq[Action](recording.actions.len),
     hashes: newSeq[uint64](recording.hashes.len),
-    chats: newSeq[ChatMessage](recording.chats.len),
-    names: newSeq[string](recording.names.len)
+    names: newSeq[string](recording.names.len),
+    launches: recording.launches, messages: recording.messages
   )
-  for i, order in recording.orders:
-    result.orders[i] = order
+  for i, action in recording.actions:
+    result.actions[i] = action
   for i, hash in recording.hashes:
     result.hashes[i] = hash
-  for i, message in recording.chats:
-    result.chats[i] = message
   for i, name in recording.names:
     result.names[i] = name
 
 proc replayTick*(
-    recording: Recording, world: World, cursor, chatCursor: var int,
+    recording: Recording, world: World, cursor: var int,
     observer: ArrivalObserver = nil
 ) =
-  ## Restores chat and launches without rerunning bots, then verifies the hash.
+  ## Applies mixed actions once in recorded order without rerunning any bots.
   if world.tick >= recording.hashes.len.int32:
     return
   let tick = world.tick
-  while chatCursor < recording.chats.len and
-    recording.chats[chatCursor].tick == tick:
-      let message = recording.chats[chatCursor]
-      if not world.addChat(message.player.int,
-        message.text.toOpenArray(0, message.length - 1)):
-          raise newException(
-            GalconError, "Invalid replay chat at tick " & $tick
-          )
-      inc chatCursor
-  while cursor < recording.orders.len and recording.orders[cursor].tick == tick:
-    let order = recording.orders[cursor]
-    let sent = world.launch(
-      order.player.int,
-      order.source.int,
-      order.target.int,
-      order.count.int
-    )
-    if sent != order.count.int:
-      raise newException(GalconError, "Invalid replay launch at tick " & $tick)
+  while cursor < recording.actions.len and recording.actions[cursor].tick == tick:
+    let action = recording.actions[cursor]
+    case action.kind
+    of ActionLaunch:
+      let sent = world.launch(action.player.int, action.source.int,
+        action.target.int, action.count.int)
+      if sent != action.count.int:
+        raise newException(GalconError, "Invalid replay launch at tick " & $tick)
+    of ActionChat:
+      if not world.addChat(action.player.int, action.text):
+        raise newException(GalconError, "Invalid replay chat at tick " & $tick)
     inc cursor
   world.advance(observer)
   world.orders.setLen(0)
@@ -511,33 +173,15 @@ proc replayTick*(
   if world.fingerprint() != recording.hashes[tick]:
     raise newException(GalconError, "Replay diverged at tick " & $tick)
 
-proc orderCursor*(recording: Recording, tick: int32): int =
-  ## Finds the first launch at or after a restored checkpoint tick.
+proc actionCursor*(recording: Recording, tick: int32): int =
+  ## Finds the first action at or after a restored checkpoint tick.
   var
     low = 0
-    high = recording.orders.len
+    high = recording.actions.len
   while low < high:
     let middle = (low + high) div 2
-    if recording.orders[middle].tick < tick:
+    if recording.actions[middle].tick < tick:
       low = middle + 1
     else:
       high = middle
   low
-
-proc chatCursor*(recording: Recording, tick: int32): int =
-  ## Finds the first global message at or after a restored checkpoint tick.
-  var
-    low = 0
-    high = recording.chats.len
-  while low < high:
-    let middle = (low + high) div 2
-    if recording.chats[middle].tick < tick:
-      low = middle + 1
-    else:
-      high = middle
-  low
-
-proc replayTick*(recording: Recording, world: World, cursor: var int) =
-  ## Plays one tick with a derived chat cursor for simple replay consumers.
-  var messages = recording.chatCursor(world.tick)
-  recording.replayTick(world, cursor, messages)

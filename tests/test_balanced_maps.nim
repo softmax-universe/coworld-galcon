@@ -1,4 +1,4 @@
-import std/[algorithm, base64, os, sets]
+import std/[algorithm, base64, os, sets, strutils]
 import jsony, polyworld/tapes
 import galcon/[common, worlds, replays, options, multiplayer]
 
@@ -178,24 +178,7 @@ proc testReplay() =
     removeFile(path)
 
 proc testLegacyReplay() =
-  type
-    OldSetup = object
-      seed: int32
-      difficulty: Difficulty
-      tutorial, players: int
-      counts: seq[int]
-    Rules = object
-      setup: OldSetup
-      collisions: CollisionKind
-      placement: Placement
-      enemyShipsPassThrough, neutralsDontProduce: bool
-      orders: seq[Order]
-      hashes: seq[uint64]
-      chats: seq[ChatMessage]
-      names: seq[string]
-    Pending = object
-      rules: Rules
-      legacyLaunches: bool
+  ## Current files preserve explicit map settings, without reading old formats.
   let setup = configuredSetup(17, Easy, 4, 32)
   setup.legacyMovement = true
   let world = newWorld(setup)
@@ -204,26 +187,24 @@ proc testLegacyReplay() =
     world.advance()
     recording.recordTick(world)
   let path = Root / "build/balanced-legacy13.replay"
-  let copy = Root / "build/balanced-legacy14.replay"
-  saveReplayFile(path, "galcon", 13, Pending(rules: Rules(
-    setup: OldSetup(seed: setup.seed, difficulty: setup.difficulty,
-      players: setup.players, counts: setup.counts),
-    collisions: setup.collisions, placement: setup.placement,
-    enemyShipsPassThrough: setup.enemyShipsPassThrough,
-    neutralsDontProduce: setup.neutralsDontProduce,
-    hashes: recording.hashes)))
-  let loaded = loadRecording(path)
-  doAssert not loaded.setup.balancedMap
-  doAssert not loaded.setup.legacyLaunches
-  loaded.save(copy)
-  for file in [path, copy]:
-    let tape = loadRecording(file)
-    doAssert not tape.setup.balancedMap
-    let playback = newWorld(tape.setup)
-    var cursor = 0
-    for tick in 0 ..< tape.hashes.len: tape.replayTick(playback, cursor)
-    doAssert playback.fingerprint() == world.fingerprint()
-    removeFile(file)
+  let copy = Root / "build/balanced-current-legacy.replay"
+  saveReplayFile(path, "galcon", 13, "unsupported")
+  var rejected = false
+  try:
+    discard loadRecording(path)
+  except GalconError as error:
+    rejected = error.msg.contains("version")
+  doAssert rejected
+  recording.save(copy)
+  let tape = loadRecording(copy)
+  doAssert not tape.setup.balancedMap and not tape.setup.legacyLaunches
+  doAssert tape.setup.legacyMovement
+  let playback = newWorld(tape.setup)
+  var cursor = 0
+  for tick in 0 ..< tape.hashes.len: tape.replayTick(playback, cursor)
+  doAssert playback.fingerprint() == world.fingerprint()
+  removeFile(path)
+  removeFile(copy)
 
 proc testLegacyBalancedReplay() =
   ## Captured before varied placement: v20, seed17/Easy/4 players/32 planets.
@@ -242,21 +223,34 @@ proc testLegacyBalancedReplay() =
   let copy = Root / "build/balanced-legacy-upgraded.replay"
   writeFile(path, base64.decode(Fixture))
   doAssert readFile(path).replayFileHeader().gameVersion == 20
-  let loaded = loadRecording(path)
-  doAssert loaded.setup.balancedMap and loaded.setup.legacyBalancedMap
-  doAssert loaded.setup.clone().legacyBalancedMap
-  loaded.save(copy)
-  for file in [path, copy]:
-    let tape = loadRecording(file)
-    doAssert tape.setup.balancedMap and tape.setup.legacyBalancedMap
-    let world = newWorld(tape.setup)
-    doAssert world.fingerprint() == InitialHash,
-      "Historical balanced maps retain their initial positions and RNG state"
-    var cursor = 0
-    for tick in 0 ..< tape.hashes.len: tape.replayTick(world, cursor)
-    doAssert tape.hashes.len == 32 and world.fingerprint() == FinalHash,
-      "Old balanced replays retain exact playback after upgrading the file"
-    removeFile(file)
+  var rejected = false
+  try:
+    discard loadRecording(path)
+  except GalconError as error:
+    rejected = error.msg.contains("version")
+  doAssert rejected, "The frozen version 20 file must be rejected explicitly"
+  let setup = configuredSetup(17, Easy, 4, 32)
+  setup.balancedMap = true
+  setup.legacyBalancedMap = true
+  let world = newWorld(setup)
+  doAssert world.fingerprint() == InitialHash,
+    "Explicit historical placement retains its positions and RNG state"
+  let recording = Recording(setup: setup)
+  for tick in 0 ..< 32:
+    world.advance()
+    recording.recordTick(world)
+  doAssert world.fingerprint() == FinalHash
+  recording.save(copy)
+  let tape = loadRecording(copy)
+  doAssert tape.setup.balancedMap and tape.setup.legacyBalancedMap
+  doAssert tape.setup.clone().legacyBalancedMap
+  let playback = newWorld(tape.setup)
+  var cursor = 0
+  for tick in 0 ..< tape.hashes.len: tape.replayTick(playback, cursor)
+  doAssert tape.hashes.len == 32 and playback.fingerprint() == FinalHash,
+    "Current files retain the selected historical placement mode"
+  removeFile(path)
+  removeFile(copy)
 
 proc testLegacyFingerprints() =
   # Captured from HEAD 135afd6 using its common/worlds/physics/spaces sources.

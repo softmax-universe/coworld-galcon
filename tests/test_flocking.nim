@@ -1,4 +1,5 @@
-import std/os
+import std/[os, strutils]
+import polyworld/tapes
 import galcon/[common, worlds, physics, replays]
 
 proc traffic(): World =
@@ -71,21 +72,44 @@ proc testFlocking*() =
     doAssert q.activeShips > 1
     doAssert q.planets[a].incoming[1] > 0 and q.planets[b].incoming[1] > 0
 
-  echo "Frozen version 14 replay retains every original hash, including resave"
+  echo "Version 14 is rejected while its physics replay in the current format"
   block:
     let path = Root / "tests/fixtures/movement-v14.replay"
-    let tape = loadRecording(path)
-    doAssert tape.setup.legacyMovement
-    let old = newWorld(tape.setup)
-    var cursor = 0
-    for tick in 0 ..< tape.hashes.len: tape.replayTick(old, cursor)
+    doAssert readFile(path).replayFileHeader().gameVersion == 14
+    var rejected = false
+    try:
+      discard loadRecording(path)
+    except GalconError as error:
+      rejected = error.msg.contains("version")
+    doAssert rejected, "Old replay versions must be rejected explicitly"
+    let setup = configuredSetup(42, Easy, 2, 2)
+    setup.legacyMovement = true
+    setup.legacyFlocking = true
+    setup.legacyContacts = true
+    setup.legacyRouteSteering = true
+    setup.legacyCrossings = true
+    setup.legacyDeadlocks = true
+    let
+      tape = Recording(setup: setup)
+      old = newWorld(setup)
+    for tick in 0 ..< 512:
+      if tick mod 64 == 0:
+        discard old.send(1, 0, 1, 20)
+      old.advance()
+      tape.recordTick(old)
+    doAssert tape.actions.len == 8
+    for i, count in [20, 17, 14, 11, 9, 8, 7, 5]:
+      doAssert tape.actions[i].kind == ActionLaunch
+      doAssert tape.actions[i].tick == (i * 64).int32
+      doAssert tape.actions[i].count == count.int32
     doAssert old.fingerprint() == 2096991766765028424'u64
     let copy = Root / "build/movement-legacy-resave.replay"
     tape.save(copy)
     let saved = loadRecording(copy)
     doAssert saved.setup.legacyMovement
+    doAssert saved.actions == tape.actions and saved.hashes == tape.hashes
     let again = newWorld(saved.setup)
-    cursor = 0
+    var cursor = 0
     for tick in 0 ..< saved.hashes.len: saved.replayTick(again, cursor)
     doAssert again.fingerprint() == old.fingerprint()
     removeFile(copy)

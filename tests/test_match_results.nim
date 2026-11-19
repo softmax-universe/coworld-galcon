@@ -103,8 +103,10 @@ for round in 1..2:
   doAssert views.allIt(it.front.prepared.finished and it.session.world.tick==48)
   doAssert host.session.recording.hashes==guest.session.recording.hashes
   for v in views:
-    doAssert v.session.recording.orders.anyIt(it.player==1)
-    doAssert v.session.recording.orders.anyIt(it.player==2)
+    doAssert v.session.recording.actions.anyIt(
+      it.kind == ActionLaunch and it.player == 1)
+    doAssert v.session.recording.actions.anyIt(
+      it.kind == ActionLaunch and it.player == 2)
     v.card.update(true,now+86400)
     doAssert v.card.shown,"Results must persist forever"
     press(v,KeyTab)

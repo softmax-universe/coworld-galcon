@@ -1,4 +1,4 @@
-import std/os
+import std/[os, strutils]
 import polyworld/tapes
 import galcon/[common, worlds, replays, sessions, options]
 
@@ -9,8 +9,8 @@ proc fixture(): World =
     p.ships = stock(100)
 
 proc testPendingLaunches*() =
-  doAssert ReplayVersion == 21,
-    "Balanced placement, movement, and tick-batched launches are versioned"
+  doAssert ReplayVersion == 22,
+    "Unified launch and chat actions require the current replay version"
   echo "Accepted 50% launches finish without another command"
   let world = fixture()
   let source = if world.planets[0].owner == 1: 0 else: 1
@@ -120,7 +120,8 @@ proc testPendingLaunches*() =
     for tick in 0 ..< 512:
       w.advance()
       tape.recordTick(w)
-    doAssert tape.orders.len == 1 and tape.orders[0].count == 50
+    doAssert tape.actions.len == 1 and tape.actions[0].kind == ActionLaunch
+    doAssert tape.actions[0].count == 50
     let path = Root / "build/pending.replay"
     tape.save(path)
     let playback = newSession(parseOptions(@["--replay", path]))
@@ -143,30 +144,16 @@ proc testPendingLaunches*() =
     let path = Root / "build/large-pending.replay"
     tape.save(path)
     let loaded = loadRecording(path)
-    doAssert loaded.orders[0].count == amount.int32
+    doAssert loaded.actions[0].kind == ActionLaunch
+    doAssert loaded.actions[0].count == amount.int32
     let playback = newWorld(loaded.setup)
     playback.planets[s].ships = stock(5000)
     var cursor = 0
     for tick in 0 ..< loaded.hashes.len: loaded.replayTick(playback, cursor)
     doAssert playback.fingerprint() == w.fingerprint()
     removeFile(path)
-  echo "Version 12 keeps immediate-spawn behavior when loaded and resaved"
+  echo "Current files retain immediate-spawn settings and reject version 12"
   block:
-    type
-      OldSetup = object
-        seed: int32
-        difficulty: Difficulty
-        tutorial, players: int
-        counts: seq[int]
-      OldRecording = object
-        setup: OldSetup
-        collisions: CollisionKind
-        placement: Placement
-        enemyShipsPassThrough, neutralsDontProduce: bool
-        orders: seq[Order]
-        hashes: seq[uint64]
-        chats: seq[ChatMessage]
-        names: seq[string]
     let setup = configuredSetup(42, Easy, 2, 2)
     setup.legacyLaunches = true
     setup.legacyMovement = true
@@ -179,21 +166,23 @@ proc testPendingLaunches*() =
       w.advance()
       tape.recordTick(w)
     let path = Root / "build/launch-v12.replay"
-    let copy = Root / "build/launch-v13-legacy.replay"
-    saveReplayFile(path, "galcon", 12, OldRecording(
-      setup: OldSetup(seed: setup.seed, players: 2, counts: setup.counts),
-      collisions: setup.collisions, placement: setup.placement,
-      enemyShipsPassThrough: true, neutralsDontProduce: true,
-      orders: tape.orders, hashes: tape.hashes))
-    let old = loadRecording(path)
-    doAssert old.setup.legacyLaunches
-    old.save(copy)
-    for p in [path, copy]:
-      let session = newSession(parseOptions(@["--replay", p]))
-      session.seek(128)
-      doAssert session.world.fingerprint() == w.fingerprint()
-      doAssert session.world.pendingLaunchCount == 0
-      removeFile(p)
+    let copy = Root / "build/launch-current-legacy.replay"
+    saveReplayFile(path, "galcon", 12, "unsupported")
+    var rejected = false
+    try:
+      discard loadRecording(path)
+    except GalconError as error:
+      rejected = error.msg.contains("version")
+    doAssert rejected
+    tape.save(copy)
+    let session = newSession(parseOptions(@["--replay", copy]))
+    doAssert session.world.setup.legacyLaunches
+    doAssert session.world.setup.legacyMovement
+    session.seek(128)
+    doAssert session.world.fingerprint() == w.fingerprint()
+    doAssert session.world.pendingLaunchCount == 0
+    removeFile(path)
+    removeFile(copy)
 
 when isMainModule:
   testPendingLaunches()

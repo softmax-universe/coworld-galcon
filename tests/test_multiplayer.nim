@@ -54,15 +54,19 @@ proc testMultiplayer*() =
   testNetworkRecovery()
   proc assertRecordedChat(world: World, recording: Recording) =
     ## Scrubbing restores the visible ring from the complete recorded transcript.
-    var expected: seq[ChatMessage]
-    for message in recording.chats:
-      if message.tick < world.tick:
-        expected.add message
+    var expected: seq[tuple[action: Action, sequence: uint64]]
+    for index, message in recording.actions:
+      if message.kind == ActionChat and message.tick < world.tick:
+        expected.add (message, index.uint64)
     let first = max(0, expected.len - MaxChatLines)
     doAssert world.chatCount == expected.len - first
     for i in 0 ..< world.chatCount:
-      doAssert world.chats[(world.chatFirst + i) mod MaxChatLines] ==
-        expected[first + i]
+      let
+        actual = world.chats[(world.chatFirst + i) mod MaxChatLines]
+        message = expected[first + i].action
+      doAssert actual.tick == message.tick and actual.player == message.player
+      doAssert actual.chatText() == message.text
+      doAssert actual.sequence == expected[first + i].sequence
 
   let relay = Relay()
   var
@@ -153,6 +157,8 @@ proc testMultiplayer*() =
   doAssert matches[0].queueOrder(1, humanSource, humanTarget, 50, true) == 50
   doAssert matches[0].stateHash() == before
   exchange()
+  doAssert matches[1].session.chat.sendChat(2, -2, "after the fleet") == 1
+  exchange()
   # Commands already admitted remain authoritative when ownership changes
   # before their tick arrives. The setup roster remains immutable for catch-up.
   first.send(RoomMessage(kind: ClaimSeat, seat: 0,
@@ -216,21 +222,31 @@ proc testMultiplayer*() =
     doAssert match.finished, "Match did not finish: " & $match.session.liveWorld.tick
     doAssert match.session.liveWorld.tick == 384
     doAssert match.stateHash() == matches[0].stateHash()
-    doAssert match.session.recording.orders.len > 0
+    doAssert match.session.recording.actions.len >= 3
+    let firstActions = match.session.recording.actions
+    doAssert firstActions[0].kind == ActionChat
+    doAssert firstActions[0].player == 1
+    doAssert firstActions[1].kind == ActionLaunch
+    doAssert firstActions[1].player == 1
+    doAssert firstActions[2].kind == ActionChat
+    doAssert firstActions[2].player == 2
+    doAssert firstActions[2].text == "after the fleet"
+    for index in 0 .. 2:
+      doAssert firstActions[index].tick == 0
     var humanOrders = 0
-    for order in match.session.recording.orders:
-      if order.player == 1:
+    for order in match.session.recording.actions:
+      if order.kind == ActionLaunch and order.player == 1:
         inc humanOrders
         doAssert order.count == 50
     doAssert humanOrders == 2
     for i in 0 ..< match.session.liveWorld.pendingLaunchCount:
       doAssert match.session.liveWorld.pendingLaunches[i].player != 1
-    doAssert match.session.recording.chats == matches[0].session.recording.chats
+    doAssert match.session.recording.actions == matches[0].session.recording.actions
     var humanMessages = 0
-    for message in match.session.recording.chats:
-      if message.player == 1:
+    for message in match.session.recording.actions:
+      if message.kind == ActionChat and message.player == 1:
         inc humanMessages
-        doAssert message.chatText() == "hello from Green"
+        doAssert message.text == "hello from Green"
     doAssert humanMessages == 1
     assertRecordedChat(match.session.liveWorld, match.session.recording)
     doAssert match.client.snapshot.phase != Desynced
@@ -247,7 +263,7 @@ proc testMultiplayer*() =
   session.returnToLive()
   session.saveRecording(path)
   let playback = newSession(parseOptions(@["--replay", path]))
-  doAssert playback.replay.chats == session.recording.chats
+  doAssert playback.replay.actions == session.recording.actions
   playback.seek(384)
   doAssert playback.world.fingerprint() == finalHash
   for tick in [77'i32, 0, 129, 384]:

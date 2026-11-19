@@ -1,5 +1,5 @@
 ## Native deterministic CPU benchmark. No renderer, sockets, or production edits.
-import std/[os, strutils, monotimes, json]
+import std/[os, strutils, monotimes, json, sequtils]
 import galcon/[common, worlds, sessions, bots, replays, chats, profiles]
 
 let outDir = if paramCount() > 0: paramStr(1) else: "tmp/many-ships-sim"
@@ -66,8 +66,7 @@ proc runCase(high: bool) =
   var sink: uint64
   for mode in ["session", "world", "replay", "hash"]:
     var world = initial.clone()
-    var cursor = s.recording.orderCursor(world.tick)
-    var chatCursor = 0
+    var cursor = s.recording.actionCursor(world.tick)
     if mode == "session": world = w
     var checkpointSession = Session(world: world, liveWorld: world,
       keepHistory: true, checkpointSpacing: CheckpointTicks)
@@ -92,12 +91,16 @@ proc runCase(high: bool) =
           s.step()
         of "world":
           let orderStart = nowNs()
-          while cursor < s.recording.orders.len and
-            s.recording.orders[cursor].tick == world.tick:
-            let order = s.recording.orders[cursor]
-            doAssert world.launch(order.player.int, order.source.int,
-              order.target.int, order.count.int) == order.count.int
-            inc cursor
+          while cursor < s.recording.actions.len and
+            s.recording.actions[cursor].tick == world.tick:
+              let action = s.recording.actions[cursor]
+              case action.kind
+              of ActionLaunch:
+                doAssert world.launch(action.player.int, action.source.int,
+                  action.target.int, action.count.int) == action.count.int
+              of ActionChat:
+                doAssert world.addChat(action.player.int, action.text)
+              inc cursor
           orderNs = nsSince(orderStart)
           let advanceStart = nowNs()
           world.advance()
@@ -106,6 +109,7 @@ proc runCase(high: bool) =
           let recordStart = nowNs()
           # Match recordTick's order clearing and hash cost without a new tape.
           world.orders.setLen(0)
+          world.chatOrderCount = 0
           sink = sink xor world.fingerprint()
           recordNs = nsSince(recordStart)
           let checkpointStart = nowNs()
@@ -113,7 +117,7 @@ proc runCase(high: bool) =
           checkpointNs = nsSince(checkpointStart)
         of "replay":
           profileBlock "bench.replayTick":
-            s.recording.replayTick(world, cursor, chatCursor)
+            s.recording.replayTick(world, cursor)
           let checkpointStart = nowNs()
           profileBlock "bench.checkpoint": checkpointSession.captureCheckpoint()
           checkpointNs = nsSince(checkpointStart)
@@ -147,7 +151,8 @@ proc runCase(high: bool) =
         "initial_hash": $initial.fingerprint(), "final_hash": $w.fingerprint(),
         "initial_tick": initial.tick, "final_tick": w.tick,
         "initial_active": initial.activeShips, "final_active": w.activeShips,
-        "orders": s.recording.orders.len, "hashes": s.recording.hashes.len,
+        "orders": s.recording.actions.countIt(it.kind == ActionLaunch),
+        "actions": s.recording.actions.len, "hashes": s.recording.hashes.len,
         "checkpoints": s.checkpoints.len, "world_bytes": sizeof(w[]),
         "bot_decisions": s.brains[1].decisions, "sink": $sink}))
   writeFile(outDir / (label & "-samples.json"), $(%rows))

@@ -1,10 +1,10 @@
 import
-  std/os,
+  std/[os, strutils],
   polyworld/tapes,
   galcon/[common, worlds, replays, options, sessions]
 
 proc testFairness*() =
-  ## Checks equal resources, seeded random starts, and old replay verification.
+  ## Checks equal resources, seeded random starts, and replay verification.
   echo "Sixteen-player clusters have one home and five nearby neutrals each"
   let crowded = parseOptions(@[
     "--headless", "--players", "16", "--neutrals-per-player", "5",
@@ -119,50 +119,37 @@ proc testFairness*() =
   doAssert first.scores() == @[0, 0, 1, 0, 0]
   first.winner = 0
   doAssert first.scores() == @[0, 0, 0, 0, 0]
-  echo "Version 6 retains its positions and verifies original hashes"
-  type
-    OriginalSetup = object
-      seed: int32
-      difficulty: Difficulty
-      tutorial: int
-      players: int
-      counts: seq[int]
-    OriginalRecording = object
-      setup: OriginalSetup
-      collisions: CollisionKind
-      orders: seq[Order]
-      hashes: seq[uint64]
-      chats: seq[ChatMessage]
-      names: seq[string]
+  echo "Current files retain classic positions and reject version 6"
   let setup = configuredSetup(8, Easy, 5, 26)
   setup.legacyMovement = true
   setup.placement = ClassicPlacement
   setup.enemyShipsPassThrough = false
   setup.neutralsDontProduce = false
   let world = newWorld(setup)
-  var old = OriginalRecording(
-    setup: OriginalSetup(seed: 8, players: 5, counts: setup.counts),
-    collisions: setup.collisions
-  )
+  let recording = Recording(setup: setup)
   for i in 0 ..< 64:
     world.advance()
-    old.hashes.add world.fingerprint()
+    recording.recordTick(world)
   let
     path = Root / "build" / "version6.replay"
     upgradedPath = Root / "build" / "version6-upgraded.replay"
-  saveReplayFile(path, "galcon", 6, old)
-  let loaded = loadRecording(path)
+  saveReplayFile(path, "galcon", 6, "unsupported")
+  var rejected = false
+  try:
+    discard loadRecording(path)
+  except GalconError as error:
+    rejected = error.msg.contains("version")
+  doAssert rejected
+  recording.save(upgradedPath)
+  let loaded = loadRecording(upgradedPath)
   doAssert loaded.setup.placement == ClassicPlacement
-  doAssert loaded.hashes == old.hashes
+  doAssert loaded.setup.legacyMovement
+  doAssert loaded.hashes == recording.hashes
   let playback = newWorld(loaded.setup)
   var cursor = 0
   for i in 0 ..< loaded.hashes.len:
     loaded.replayTick(playback, cursor)
   doAssert playback.fingerprint() == world.fingerprint()
-  loaded.save(upgradedPath)
-  let upgraded = loadRecording(upgradedPath)
-  doAssert upgraded.setup.placement == ClassicPlacement
-  doAssert upgraded.hashes == old.hashes
   doAssert readFile(upgradedPath).replayFileHeader().gameVersion == ReplayVersion
   removeFile(path)
   removeFile(upgradedPath)

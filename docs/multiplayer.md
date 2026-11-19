@@ -1,7 +1,7 @@
 # Multiplayer protocol
 
 Galcon imports the shared Polyworld room protocol. The current adapter uses
-room envelope version 5 and Galcon command protocol 3. Clients must have matching
+room envelope version 5 and Galcon command protocol 4. Clients must have matching
 game, gameplay and command-protocol identities. The relay contains no Galcon
 configuration parser or game rules.
 
@@ -36,3 +36,9 @@ retains the match for reconnection.
 The match duration and victory rules belong to Galcon. Match completion is
 reported with its final simulation hash. The relay orders bounded packets,
 checks ownership, compares hashes and retains history for reconnecting clients.
+
+Replay version 22 stores accepted fleet launches and global chat in one action
+sequence. Each tick preserves their exact acceptance order, and seeking uses one
+cursor. Chat records include their acceptance position in the simulation hash,
+so moving a message across a fleet order cannot silently change replay order.
+Older replay layouts are rejected rather than converted.

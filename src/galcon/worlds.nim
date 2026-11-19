@@ -555,8 +555,10 @@ proc emitLaunch(world: World, player, source, target, amount: int, opening = -1)
       player: player.int32,
       source: source.int32,
       target: target.int32,
-      count: result.int32
+      count: result.int32,
+      sequence: world.actionSequence
     )
+    inc world.actionSequence
 
 proc drainLaunches(world: World) =
   ## Stable FIFO compaction keeps retries bounded and independent of frame rate.
@@ -624,11 +626,13 @@ proc launch*(world: World, player, source, target, amount: int): int =
   if world.pendingLaunchCount == MaxPendingLaunches:
     return
   let order = Order(tick: world.tick, player: player.int32,
-    source: source.int32, target: target.int32, count: count.int32)
+    source: source.int32, target: target.int32, count: count.int32,
+    sequence: world.actionSequence)
   world.planets[source].ships -= stock(count)
   world.pendingLaunches[world.pendingLaunchCount] = order
   inc world.pendingLaunchCount
   world.orders.add order
+  inc world.actionSequence
   if world.setup.legacyMovement:
     world.drainLaunches()
   count
@@ -864,6 +868,7 @@ proc fingerprint*(world: World): uint64 {.measure.} =
       let message = world.chats[(world.chatFirst + i) mod MaxChatLines]
       mix(message.tick.uint64)
       mix(message.player.uint64)
+      mix(message.sequence)
       mix(message.length.uint64)
       for j in 0 ..< message.length:
         mix(message.text[j].ord.uint64)

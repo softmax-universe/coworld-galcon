@@ -56,13 +56,14 @@ macro rematchLifecycle(): untyped =
       let path = output / ("round-" & $round & "-client-" & $i & ".replay")
       recording.save(path)
       let tape = loadRecording(path)
-      check("each human command retained", tape.orders.anyIt(it.player == 2) and tape.orders.anyIt(it.player == 3))
+      check("each human command retained", tape.actions.anyIt(it.kind == ActionLaunch and it.player == 2) and tape.actions.anyIt(it.kind == ActionLaunch and it.player == 3))
+      check("replay action order retained", tape.actions == recording.actions)
       check("replay names and hashes retained", tape.names == @["", "Private rematch bot", names[0], names[1]] and tape.hashes == host.session.recording.hashes)
       let world = newWorld(tape.setup)
-      var cursor, chatCursor: int
-      while world.tick < tape.hashes.len.int32: tape.replayTick(world,cursor,chatCursor)
+      var cursor: int
+      while world.tick < tape.hashes.len.int32: tape.replayTick(world,cursor)
       check("serialized replay verifies every tick", world.fingerprint() == tape.hashes[^1])
-      echo "REMATCH_REPLAY round=",round," client=",i," match=",previousMatch," ticks=",ticks," orders=",tape.orders.len," hash=",world.fingerprint()
+      echo "REMATCH_REPLAY round=",round," client=",i," match=",previousMatch," ticks=",ticks," actions=",tape.actions.len," hash=",world.fingerprint()
     oldPreparations = clients.mapIt(it.view.front.prepared)
     for i in 0..<(if round == 1: 1 else: ClientCount):
       button(i,KeyEscape,true); button(i,KeyEscape,false)

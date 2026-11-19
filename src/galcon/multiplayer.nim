@@ -7,7 +7,7 @@ import
 export rooms, roomclients
 
 const
-  NetworkProtocol* = 3'u32
+  NetworkProtocol* = 4'u32
   TruceSource* = staticRead(Root / "players/truce.bas")
 
 type

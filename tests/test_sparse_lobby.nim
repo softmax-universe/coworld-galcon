@@ -1,4 +1,4 @@
-import std/os
+import std/[os, sequtils]
 import jsony
 import polyworld/[relays, roomclients]
 import galcon/[multiplayer, common, worlds, sessions, options, replays]
@@ -75,10 +75,12 @@ proc testSparseLobby*() =
     doAssert matches[0].stateHash() == matches[1].stateHash()
     if matches[0].finished and matches[1].finished: break
   doAssert matches[0].finished and matches[1].finished
-  doAssert matches[0].session.recording.orders.len == 1
+  doAssert matches[0].session.recording.actions.countIt(
+    it.kind == ActionLaunch) == 1
   let path = Root / "build/sparse-lobby.replay"
   matches[0].session.saveRecording(path)
   let replay = newSession(parseOptions(@["--replay", path]))
+  doAssert replay.replay.actions == matches[0].session.recording.actions
   replay.seek(96)
   doAssert replay.world.fingerprint() == matches[0].session.liveWorld.fingerprint()
   doAssert replay.names[1] == names[0] and replay.names[2] == names[1]

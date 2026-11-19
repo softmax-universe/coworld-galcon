@@ -21,7 +21,6 @@ type
       ## Human-facing roster names remain outside worlds, hubs, and bot APIs.
     recording*, replay*: Recording
     replayCursor*: int
-    replayChatCursor*: int
     playback*, done*, keepHistory*, networked*: bool
     human*: int
     maximumTicks*: int32
@@ -113,8 +112,7 @@ proc newSession*(
   result.chat = newChatHub(result.liveWorld)
   result.recording = Recording(
     setup: options.setup,
-    orders: newSeqOfCap[Order](MaxBodies),
-    chats: newSeqOfCap[ChatMessage](if result.keepHistory: 64 else: 0),
+    actions: newSeqOfCap[Action](if result.keepHistory: MaxBodies else: 0),
     hashes: newSeqOfCap[uint64](
       if result.keepHistory: options.game.maximumTicks.int else: 0
     )
@@ -204,8 +202,7 @@ proc restoreTo*(session: Session, target: int32) =
     index = i
   session.world = session.checkpoints[index].world.clone()
   let tape = if session.playback: session.replay else: session.recording
-  session.replayCursor = tape.orderCursor(session.world.tick)
-  session.replayChatCursor = tape.chatCursor(session.world.tick)
+  session.replayCursor = tape.actionCursor(session.world.tick)
 
 proc returnToLive*(session: Session) =
   ## Returns instantly to the live frontier with pending orders and VMs intact.
@@ -217,7 +214,7 @@ proc step*(session: Session) {.measure.} =
   if session.playback:
     if session.world.tick < session.maximumTicks:
       session.replay.replayTick(session.world, session.replayCursor,
-        session.replayChatCursor, session.observer)
+        session.observer)
       if session.tickObserver != nil:
         session.tickObserver(session.world)
       session.captureCheckpoint()
@@ -225,7 +222,7 @@ proc step*(session: Session) {.measure.} =
     return
   if session.inHistory:
     session.recording.replayTick(session.world, session.replayCursor,
-      session.replayChatCursor, session.observer)
+      session.observer)
     if session.tickObserver != nil:
       session.tickObserver(session.world)
     if session.world.tick >= session.liveWorld.tick:

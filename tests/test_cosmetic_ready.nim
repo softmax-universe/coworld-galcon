@@ -1,10 +1,10 @@
-import std/[importutils, os]
+import std/[importutils, os, sequtils]
 when defined(cosmeticReadySocket):
   import std/strutils
   import windy
 import jsony
 import polyworld/[relays, networks]
-import galcon/[frontends, multiplayer, worlds, sessions, replays, options]
+import galcon/[common, frontends, multiplayer, worlds, sessions, replays, options]
 privateAccess(Frontend)
 
 let relay = Relay()
@@ -132,11 +132,12 @@ exchange()
 for i, front in fronts:
   let match = front.prepared
   doAssert match.finished and match.session.liveWorld.tick == 192
-  doAssert match.session.recording.orders.len == 2
+  doAssert match.session.recording.actions.countIt(it.kind == ActionLaunch) == 2
   doAssert match.session.recording.hashes == host.prepared.session.recording.hashes
   let path = "build/cosmetic-ready-" & $i & ".replay"
   match.session.saveRecording(path)
   let playback = newSession(parseOptions(@["--replay", path]))
+  doAssert playback.replay.actions == match.session.recording.actions
   playback.seek(192)
   doAssert playback.world.fingerprint() == match.session.liveWorld.fingerprint()
   removeFile(path)

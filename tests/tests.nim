@@ -536,46 +536,43 @@ block:
   playback.seek(1200)
   removeFile(path)
 
-echo "Version 2 replays retain original physics in the current replay format"
+echo "Current replays retain explicit physics settings and reject old formats"
 block:
-  type
-    OriginalSetup = object
-      seed: int32
-      difficulty: Difficulty
-      tutorial: int
-      players: int
-      counts: seq[int]
-    OriginalRecording = object
-      setup: OriginalSetup
-      orders: seq[Order]
-      hashes: seq[uint64]
   let setup = configuredSetup(8, Easy, 5, 26)
   setup.collisions = AllPairs
   setup.placement = ClassicPlacement
   setup.enemyShipsPassThrough = false
   setup.neutralsDontProduce = false
   let world = newWorld(setup)
-  var old = OriginalRecording(setup: OriginalSetup(
-    seed: 8, players: 5, counts: @[21, 1, 1, 1, 1, 1]
-  ))
+  let recording = Recording(setup: setup)
   for i in 0 ..< 10:
     world.advance()
-    old.hashes.add world.fingerprint()
+    recording.recordTick(world)
   let
     path = Root / "build" / "version2.replay"
     copied = Root / "build" / "version2-copy.replay"
-  saveReplayFile(path, "galcon", 2, old)
-  let recording = loadRecording(path)
+  saveReplayFile(path, "galcon", 2, "unsupported")
+  var rejected = false
+  try:
+    discard loadRecording(path)
+  except GalconError as error:
+    rejected = error.msg.contains("version")
+  doAssert rejected, "Old replay versions must be rejected explicitly"
   recording.save(copied)
   doAssert recording.setup.collisions == AllPairs
   doAssert readFile(copied).replayFileHeader().gameVersion == ReplayVersion
   let upgraded = loadRecording(copied)
   doAssert upgraded.setup.collisions == AllPairs
   doAssert upgraded.hashes == recording.hashes
+  let playback = newWorld(upgraded.setup)
+  var cursor = 0
+  for i in 0 ..< upgraded.hashes.len:
+    upgraded.replayTick(playback, cursor)
+  doAssert playback.fingerprint() == world.fingerprint()
   removeFile(path)
   removeFile(copied)
 
-echo "Bounded history thinning and old two-player replay compatibility"
+echo "Bounded history thinning and rejection of old two-player files"
 block:
   let configured = parseOptions(@["--ticks", "9000", "--planets", "2"])
   let live = newSession(configured)
@@ -590,34 +587,14 @@ block:
   live.seek(9000)
   doAssert live.world.tick == 9000
 block:
-  type
-    OldSetup = object
-      seed: int32
-      difficulty: Difficulty
-      tutorial: int
-      counts: array[3, int]
-    OldRecording = object
-      setup: OldSetup
-      orders: seq[Order]
-      hashes: seq[uint64]
-  let setup = defaultSetup()
-  setup.collisions = AllPairs
-  setup.legacyMovement = true
-  setup.enemyShipsPassThrough = false
-  setup.neutralsDontProduce = false
-  let world = newWorld(setup)
-  var old = OldRecording(setup: OldSetup(seed: 8, counts: [24, 1, 1]))
-  for i in 0 ..< 10:
-    world.advance()
-    old.hashes.add world.fingerprint()
   let path = Root / "build" / "legacy.replay"
-  saveReplayFile(path, "galcon", 1, old)
-  let recording = loadRecording(path)
-  let playback = newWorld(recording.setup)
-  var cursor = 0
-  for i in 0 ..< 10:
-    recording.replayTick(playback, cursor)
-  doAssert playback.fingerprint() == world.fingerprint()
+  saveReplayFile(path, "galcon", 1, "unsupported")
+  var rejected = false
+  try:
+    discard loadRecording(path)
+  except GalconError as error:
+    rejected = error.msg.contains("version")
+  doAssert rejected, "Version 1 must not enter the current replay decoder"
   removeFile(path)
 
 when not defined(headless):

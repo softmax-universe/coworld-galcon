@@ -40,6 +40,8 @@ proc addChat*(world: World, sender: int, text: openArray[char]): bool =
     dec message.length
   if message.length == 0:
     return false
+  message.sequence = world.actionSequence
+  inc world.actionSequence
   let index = (world.chatFirst + world.chatCount) mod MaxChatLines
   world.chats[index] = message
   if world.chatCount == MaxChatLines:
@@ -76,7 +78,7 @@ proc deliverChat*(
       inc result
 
 proc chatText*(message: ChatMessage): string =
-  ## Builds display text only at the graphical presentation boundary.
+  ## Copies bounded text for presentation or the unified replay action stream.
   result = newString(message.length)
   for i in 0 ..< message.length:
     result[i] = message.text[i]

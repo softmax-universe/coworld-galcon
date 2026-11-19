@@ -1,5 +1,5 @@
 import
-  std/os,
+  std/[os, strutils],
   polyworld/tapes,
   galcon/[common, worlds, replays]
 
@@ -9,167 +9,59 @@ proc replayFinal(recording: Recording): World =
   var cursor = 0
   for tick in 0 ..< recording.hashes.len:
     recording.replayTick(result, cursor)
-  doAssert cursor == recording.orders.len
+  doAssert cursor == recording.actions.len
 
-echo "Frozen version 15 fleet movement survives loading and resaving"
-block:
-  # Captured before version 16: seed 42, three players, nine planets, 512 ticks.
-  # Every 64 ticks each owned planet sent 30 ships four planet indices ahead.
+echo "Frozen replay versions are rejected; explicit physics modes still replay"
+const FrozenModes = [
+  (15, 8981790453949206857'u64, 150, 30),
+  (16, 17190597569456507194'u64, 165, 30),
+  (17, 6077549973392311357'u64, 157, 30),
+  (18, 12580543939321267476'u64, 134, 27),
+  (19, 4654717465150559285'u64, 133, 27)
+]
+for (version, hash, impacts, actions) in FrozenModes:
+  let path = Root / "tests/fixtures" / ("movement-v" & $version & ".replay")
+  doAssert readFile(path).replayFileHeader().gameVersion == version.uint16
+  var rejected = false
+  try:
+    discard loadRecording(path)
+  except GalconError as error:
+    rejected = error.msg.contains("version")
+  doAssert rejected, "Historical replay files must not enter the current decoder"
+  let setup = configuredSetup(42, Easy, 3, 9)
+  setup.legacyFlocking = version <= 15
+  setup.legacyContacts = version <= 16
+  setup.legacyRouteSteering = version <= 17
+  setup.legacyCrossings = version <= 18
+  setup.legacyDeadlocks = true
   let
-    path = Root / "tests/fixtures/movement-v15.replay"
-    copied = Root / "build/movement-v15-resave.replay"
-    recording = loadRecording(path)
-  doAssert readFile(path).replayFileHeader().gameVersion == 15
-  doAssert recording.hashes.len == 512
-  doAssert recording.orders.len == 30
-  doAssert recording.setup.legacyFlocking
-  doAssert recording.setup.legacyContacts
-  doAssert recording.setup.legacyRouteSteering
-  doAssert recording.setup.legacyCrossings
-  doAssert recording.setup.legacyDeadlocks
-  doAssert not recording.setup.legacyMovement
-  let original = recording.replayFinal()
-  doAssert original.fingerprint() == 8981790453949206857'u64
-  doAssert original.impacts == 150
+    world = newWorld(setup)
+    recording = Recording(setup: setup)
+    copied = Root / "build" / ("movement-mode-" & $version & ".replay")
+  for tick in 0 ..< 512:
+    if tick mod 64 == 0:
+      for source, planet in world.planets:
+        if planet.owner > 0:
+          discard world.launch(
+            planet.owner, source, (source + 4) mod world.planets.len, 30
+          )
+    world.advance()
+    recording.recordTick(world)
+  doAssert world.fingerprint() == hash
+  doAssert world.impacts == impacts
+  doAssert recording.actions.len == actions
   recording.save(copied)
   doAssert readFile(copied).replayFileHeader().gameVersion == ReplayVersion
   let saved = loadRecording(copied)
-  doAssert saved.setup.legacyFlocking
-  doAssert saved.setup.legacyContacts
-  doAssert saved.setup.legacyRouteSteering
-  doAssert saved.setup.legacyCrossings
+  doAssert saved.setup.legacyFlocking == setup.legacyFlocking
+  doAssert saved.setup.legacyContacts == setup.legacyContacts
+  doAssert saved.setup.legacyRouteSteering == setup.legacyRouteSteering
+  doAssert saved.setup.legacyCrossings == setup.legacyCrossings
   doAssert saved.setup.legacyDeadlocks
   doAssert not saved.setup.legacyMovement
+  doAssert saved.actions == recording.actions
   doAssert saved.hashes == recording.hashes
-  doAssert saved.replayFinal().fingerprint() == original.fingerprint()
-  removeFile(copied)
-
-echo "Frozen version 16 soft contacts survive loading and resaving"
-block:
-  # Captured before version 17 with the same launch schedule as version 15.
-  let
-    path = Root / "tests/fixtures/movement-v16.replay"
-    copied = Root / "build/movement-v16-resave.replay"
-    recording = loadRecording(path)
-  doAssert readFile(path).replayFileHeader().gameVersion == 16
-  doAssert recording.hashes.len == 512
-  doAssert recording.orders.len == 30
-  doAssert recording.setup.legacyContacts
-  doAssert recording.setup.legacyRouteSteering
-  doAssert recording.setup.legacyCrossings
-  doAssert recording.setup.legacyDeadlocks
-  doAssert not recording.setup.legacyFlocking
-  doAssert not recording.setup.legacyMovement
-  let original = recording.replayFinal()
-  doAssert original.fingerprint() == 17190597569456507194'u64
-  doAssert original.impacts == 165
-  recording.save(copied)
-  let saved = loadRecording(copied)
-  doAssert readFile(copied).replayFileHeader().gameVersion == ReplayVersion
-  doAssert saved.setup.legacyContacts
-  doAssert saved.setup.legacyRouteSteering
-  doAssert saved.setup.legacyCrossings
-  doAssert saved.setup.legacyDeadlocks
-  doAssert not saved.setup.legacyFlocking
-  doAssert not saved.setup.legacyMovement
-  doAssert saved.hashes == recording.hashes
-  doAssert saved.replayFinal().fingerprint() == original.fingerprint()
-  removeFile(copied)
-
-echo "Frozen version 17 contact steering survives loading and resaving"
-block:
-  # Captured before version 18 with the same launch schedule as version 15.
-  let
-    path = Root / "tests/fixtures/movement-v17.replay"
-    copied = Root / "build/movement-v17-resave.replay"
-    recording = loadRecording(path)
-  doAssert readFile(path).replayFileHeader().gameVersion == 17
-  doAssert recording.hashes.len == 512
-  doAssert recording.orders.len == 30
-  doAssert recording.setup.legacyRouteSteering
-  doAssert recording.setup.legacyCrossings
-  doAssert recording.setup.legacyDeadlocks
-  doAssert not recording.setup.legacyContacts
-  doAssert not recording.setup.legacyFlocking
-  doAssert not recording.setup.legacyMovement
-  let original = recording.replayFinal()
-  doAssert original.fingerprint() == 6077549973392311357'u64
-  doAssert original.impacts == 157
-  recording.save(copied)
-  let saved = loadRecording(copied)
-  doAssert readFile(copied).replayFileHeader().gameVersion == ReplayVersion
-  doAssert saved.setup.legacyRouteSteering
-  doAssert saved.setup.legacyCrossings
-  doAssert saved.setup.legacyDeadlocks
-  doAssert not saved.setup.legacyContacts
-  doAssert not saved.setup.legacyFlocking
-  doAssert not saved.setup.legacyMovement
-  doAssert saved.hashes == recording.hashes
-  doAssert saved.replayFinal().fingerprint() == original.fingerprint()
-  removeFile(copied)
-
-echo "Frozen version 18 crossing pressure survives loading and resaving"
-block:
-  # Captured before version 19 with the same launch schedule as version 15.
-  let
-    path = Root / "tests/fixtures/movement-v18.replay"
-    copied = Root / "build/movement-v18-resave.replay"
-    recording = loadRecording(path)
-  doAssert readFile(path).replayFileHeader().gameVersion == 18
-  doAssert recording.hashes.len == 512
-  doAssert recording.orders.len == 27
-  doAssert recording.setup.legacyCrossings
-  doAssert recording.setup.legacyDeadlocks
-  doAssert not recording.setup.legacyRouteSteering
-  doAssert not recording.setup.legacyContacts
-  doAssert not recording.setup.legacyFlocking
-  doAssert not recording.setup.legacyMovement
-  let original = recording.replayFinal()
-  doAssert original.fingerprint() == 12580543939321267476'u64
-  doAssert original.impacts == 134
-  recording.save(copied)
-  let saved = loadRecording(copied)
-  doAssert readFile(copied).replayFileHeader().gameVersion == ReplayVersion
-  doAssert saved.setup.legacyCrossings
-  doAssert saved.setup.legacyDeadlocks
-  doAssert not saved.setup.legacyRouteSteering
-  doAssert not saved.setup.legacyContacts
-  doAssert not saved.setup.legacyFlocking
-  doAssert not saved.setup.legacyMovement
-  doAssert saved.hashes == recording.hashes
-  doAssert saved.replayFinal().fingerprint() == original.fingerprint()
-  removeFile(copied)
-
-echo "Frozen version 19 triangle contacts survive loading and resaving"
-block:
-  # Captured before version 20 with the same launch schedule as version 15.
-  let
-    path = Root / "tests/fixtures/movement-v19.replay"
-    copied = Root / "build/movement-v19-resave.replay"
-    recording = loadRecording(path)
-  doAssert readFile(path).replayFileHeader().gameVersion == 19
-  doAssert recording.hashes.len == 512
-  doAssert recording.orders.len == 27
-  doAssert not recording.setup.legacyCrossings
-  doAssert recording.setup.legacyDeadlocks
-  doAssert not recording.setup.legacyRouteSteering
-  doAssert not recording.setup.legacyContacts
-  doAssert not recording.setup.legacyFlocking
-  doAssert not recording.setup.legacyMovement
-  let original = recording.replayFinal()
-  doAssert original.fingerprint() == 4654717465150559285'u64
-  doAssert original.impacts == 133
-  recording.save(copied)
-  let saved = loadRecording(copied)
-  doAssert readFile(copied).replayFileHeader().gameVersion == ReplayVersion
-  doAssert not saved.setup.legacyCrossings
-  doAssert saved.setup.legacyDeadlocks
-  doAssert not saved.setup.legacyRouteSteering
-  doAssert not saved.setup.legacyContacts
-  doAssert not saved.setup.legacyFlocking
-  doAssert not saved.setup.legacyMovement
-  doAssert saved.hashes == recording.hashes
-  doAssert saved.replayFinal().fingerprint() == original.fingerprint()
+  doAssert saved.replayFinal().fingerprint() == hash
   removeFile(copied)
 
 echo "Current deadlock recovery survives replay and isolated checkpoints"
@@ -213,14 +105,14 @@ block:
     recording.recordTick(world)
     if tick == 255:
       checkpoint = world.clone()
-  doAssert recording.orders.len > 0
+  doAssert recording.actions.len > 0
   doAssert world.impacts > 0
   doAssert not checkpoint.setup.legacyFlocking
   doAssert not checkpoint.setup.legacyContacts
   doAssert not checkpoint.setup.legacyRouteSteering
   doAssert not checkpoint.setup.legacyCrossings
   doAssert not checkpoint.setup.legacyDeadlocks
-  var cursor = recording.orderCursor(checkpoint.tick)
+  var cursor = recording.actionCursor(checkpoint.tick)
   while checkpoint.tick < world.tick:
     recording.replayTick(checkpoint, cursor)
   doAssert checkpoint.fingerprint() == world.fingerprint()
