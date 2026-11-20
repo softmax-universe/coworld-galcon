@@ -93,6 +93,8 @@ type
     returnPending, returnSent: bool
     matchMenu: MatchMenu
     diagnosticsOwnInput: bool
+    when not defined(emscripten):
+      saveReplay: bool
 
 proc ownerColor(owner: int): ColorRGBX =
   ## Converts the original player palette at the rendering boundary.
@@ -166,12 +168,8 @@ proc playSource(source: Source) =
 proc syncAudio(view: View) =
   ## Applies saved channel levels and keeps one soundtrack across all screens.
   let volume =
-    when compiles(view.front.preferences.soundMuted):
-      if view.options.muted or view.front.preferences.soundMuted: 0.0'f
-      else: view.front.preferences.mainVolume.float32 / 100
-    else:
-      if view.options.muted: 0.0'f
-      else: view.front.preferences.mainVolume.float32 / 100
+    if view.options.muted: 0.0'f
+    else: view.front.preferences.mainVolume.float32 / 100
   if view.musicSource != nil:
     view.musicSource.gain = volume *
       view.front.preferences.musicVolume.float32 / 100
@@ -271,15 +269,44 @@ proc updateBoard(view: View) {.measure.} =
     view.sk.finishRasterUpdates()
   view.boardRevision = view.session.world.revision
 
+proc finishSession(view: View) =
+  ## Finishes exports and retains a failed library save before replacing a match.
+  if view.session == nil:
+    return
+  try:
+    view.session.finish()
+  except CatchableError as error:
+    view.front.error = error.msg
+    when not defined(emscripten):
+      view.window.closeRequested = false
+      view.closing = false
+    else:
+      raise
+  when not defined(emscripten):
+    if not view.session.replayExitHandled:
+      view.session.replayExitHandled = true
+      try:
+        view.session.finishReplaySaving(view.saveReplay)
+      except CatchableError as error:
+        view.front.error = "Cannot save replay: " & error.msg
+        view.window.closeRequested = false
+        view.closing = false
+        try:
+          view.front.unsavedReplays.add(view.session.recordingData())
+        except GalconError:
+          discard
+
 proc start(view: View, tutorial = 0, provided: Session = nil) =
   ## Starts a seeded match or one of the original three tutorial maps.
   if view.session != nil:
     view.session.observer = nil
     view.session.tickObserver = nil
-    view.session.finish()
+    view.finishSession()
   var options = view.options.clone()
   options.setup = options.matchSetup(view.difficulty, tutorial)
   view.session = if provided == nil: newSession(options) else: provided
+  when not defined(emscripten):
+    view.saveReplay = view.front.replayPreferences.saveReplay
   view.card = Card()
   view.matchMenu = HiddenMatchMenu
   view.returnPending = false
@@ -336,9 +363,15 @@ proc start(view: View, tutorial = 0, provided: Session = nil) =
   view.seenCaptures = 0
   view.seenImpacts = 0
 
-const MainMenuItems =
-  when defined(emscripten): ["tutorial", "single player", "multiplayer", "settings", "help"]
-  else: ["tutorial", "single player", "multiplayer", "settings", "help", "quit"]
+const
+  MainMenuItems =
+    when defined(emscripten):
+      ["tutorial", "single player", "multiplayer", "settings", "help"]
+    else:
+      ["tutorial", "single player", "multiplayer", "settings", "help",
+        "replays", "quit"]
+  MenuTop = when defined(emscripten): 120 else: 104
+  MenuStep = when defined(emscripten): 46 else: 40
 
 proc menuAction(view: View) =
   ## Opens the selected Galcon menu or tutorial.
@@ -355,7 +388,12 @@ proc menuAction(view: View) =
     view.screen = FrontScreen
   of 4: view.screen = HelpScreen
   of 5:
-    when not defined(emscripten): view.closing = true
+    when not defined(emscripten):
+      view.front.openReplays()
+      view.screen = FrontScreen
+  of 6:
+    when not defined(emscripten):
+      view.closing = true
   else: discard
 
 proc syncMatchScreen(view: View) =
@@ -363,7 +401,7 @@ proc syncMatchScreen(view: View) =
   if view.session != nil and view.session.networked and view.front.connection != nil:
     let snapshot = view.front.connection.client.snapshot
     if snapshot.room.len == 0:
-      view.session.finish()
+      view.finishSession()
       view.session = nil
       view.front.prepared = nil
       view.front.launch = nil
@@ -376,6 +414,7 @@ proc syncMatchScreen(view: View) =
       view.returnPending = false
       view.returnSent = false
     elif snapshot.phase == Lobby:
+      view.finishSession()
       view.front.page = LobbyMenu
       view.screen = FrontScreen
       view.returnPending = false
@@ -389,13 +428,19 @@ proc syncMatchScreen(view: View) =
 proc returnToMenu(view: View) =
   ## Completed rooms reopen directly; never render an Ended room as a lobby.
   view.matchMenu = HiddenMatchMenu
+  when not defined(emscripten):
+    if view.session.playback:
+      view.finishSession()
+      view.front.openReplays()
+      view.screen = FrontScreen
+      return
   if view.session.networked and view.front.connection != nil:
     let client = view.front.connection.client
     if client.snapshot.phase in {Ended, Desynced} or view.session.done:
       view.returnPending = true
       view.syncMatchScreen()
       return
-  view.session.finish()
+  view.finishSession()
   view.front.leave()
   view.screen = MenuScreen
 
@@ -413,16 +458,25 @@ proc syncResults(view: View, now: float64) =
     EndScreen else: GameScreen
   if view.screen == EndScreen:
     view.matchMenu = HiddenMatchMenu
+  when not defined(emscripten):
+    view.session.updateReplaySaving(view.saveReplay)
   view.card.update(view.screen == EndScreen, now)
 
 proc drawMenu(view: View) =
   ## Reproduces the original title, menu arrangement, and author credit.
   view.text("Title", "galcon 2006", vec2(0, 8), Green, centered = true)
   for i, item in MainMenuItems:
-    view.text("Menu", item, vec2(0, 120 + i.float32 * 46),
+    view.text("Menu", item, vec2(0, MenuTop.float32 + i.float32 * MenuStep),
       if i == view.selection: White else: Gray, centered = true)
-  view.text("Hud", "ludum dare #8 - phil hassey", vec2(0, 440), Gray,
-    centered = true)
+  when not defined(emscripten):
+    if view.front.error.len > 0 or view.front.unsavedReplays.len > 0:
+      view.front.drawReplayNotice(view.sk, view.offset + vec2(20, 394), 600)
+    else:
+      view.text("Hud", "ludum dare #8 - phil hassey", vec2(0, 440), Gray,
+        centered = true)
+  else:
+    view.text("Hud", "ludum dare #8 - phil hassey", vec2(0, 440), Gray,
+      centered = true)
 
 proc drawShips(view: View) {.measure.} =
   ## Draws hollow ships with a modest squeeze inside crowded streams.
@@ -432,39 +486,25 @@ proc drawShips(view: View) {.measure.} =
     if not body.active or body.kind != ShipBody:
       continue
     let
-      movementX = (body.x - body.previousX).toFloat32
-      movementY = (body.y - body.previousY).toFloat32
-      contacts = world.setup != nil and not world.setup.legacyMovement and
-        not world.setup.legacyFlocking and not world.setup.legacyContacts
       blend = if interpolateVisuals and view.transport.player.playing:
         clamp(view.transport.player.accumulator * TickRate, 0.0'f, 1.0'f)
         else: 1.0'f
-      heading =
-        if contacts:
-          let
-            previous = world.previousHullHeading[i].toFloat32
-            turn = body.heading.toFloat32 - previous
-          previous + math.arctan2(math.sin(turn), math.cos(turn)) * blend
-        elif movementX == 0 and movementY == 0:
-          body.heading.toFloat32
-        else:
-          math.arctan2(movementY, movementX)
+      previous = world.previousHullHeading[i].toFloat32
+      turn = body.heading.toFloat32 - previous
+      heading = previous + math.arctan2(math.sin(turn), math.cos(turn)) * blend
       center = view.offset + vec2(
         body.previousX.toFloat32 + (body.x - body.previousX).toFloat32 * blend,
         body.previousY.toFloat32 + (body.y - body.previousY).toFloat32 * blend
       )
       tint = ownerColor(world.ships[i].owner)
       color =
-        if body.escapeTicks > 0 and not world.setup.legacyDeadlocks:
+        if body.escapeTicks > 0:
           rgbx(tint.r div 2, tint.g div 2, tint.b div 2, tint.a div 2)
         else:
           tint
       pressure = clamp(
-        if contacts:
-          world.previousHullPressure[i].toFloat32 * (1 - blend) +
-            world.neighborPressure[i].toFloat32 * blend
-        else:
-          world.neighborPressure[i].toFloat32,
+        world.previousHullPressure[i].toFloat32 * (1 - blend) +
+          world.neighborPressure[i].toFloat32 * blend,
         0.0'f, 1.0'f
       )
       forward = vec2(math.cos(heading), math.sin(heading)) *
@@ -692,6 +732,16 @@ proc drawCard(view: View) {.measure.} =
     else: "Return to Menu"
     let width = view.sk.rasterTextSize("Score", label).x
     view.text("Score", label, vec2((Width.float32 - width) / 2, button.y + 10), White)
+    when not defined(emscripten):
+      if view.saveReplay and not view.session.playback:
+        let message =
+          if view.session.replaySaveError.len > 0:
+            view.session.replaySaveError
+          elif view.session.replaySaving.savedPath.len > 0:
+            "Replay saved to your library."
+          else:
+            ""
+        view.text("Hover", message, vec2(8, 8), Gray, maxWidth = Width - 16)
 
 proc drawGame(view: View) {.measure.} =
   ## Paints 2D art, translucent effects, transparent counts, and the LD8 HUD.
@@ -780,7 +830,13 @@ proc drawMatchMenu(view: View) =
   ## A separate shared Silky overlay pass leaves the game framebuffer intact.
   if view.matchMenu == HiddenMatchMenu:
     return
-  let size = if view.matchMenu == GameSettings: vec2(976, 700) else: vec2(480, 360)
+  let size =
+    if view.matchMenu == GameSettings:
+      vec2(976, 700)
+    elif not defined(emscripten) and view.matchMenu == GameMenu:
+      vec2(480, 424)
+    else:
+      vec2(480, 360)
   view.sk.uiScale = view.front.settingsScale(selectedUiScale(max(0.1'f, min(
     view.window.size.x.float32 / 1000, view.window.size.y.float32 / 800)),
     1080.0'f / 800))
@@ -812,12 +868,25 @@ proc drawMatchMenu(view: View) =
         view.matchMenu = HiddenMatchMenu
       elif view.front.menuButton(view.sk, "Settings", origin + vec2(0, 168), 416):
         view.matchMenu = GameSettings
-      elif view.front.menuButton(view.sk, "Leave game", origin + vec2(0, 232), 416):
+      when not defined(emscripten):
+        if view.front.menuButton(view.sk, "Save replay",
+          origin + vec2(0, 232), 416,
+          enabled = view.session != nil and not view.session.playback):
+            discard view.session.saveLibraryRecording()
+            view.front.error = ""
+      let leaveAt = when defined(emscripten): 232 else: 296
+      if view.front.menuButton(view.sk, "Leave game",
+        origin + vec2(0, leaveAt.float32), 416):
         view.matchMenu = ConfirmLeave
-  except GalconError, RoomsError, MenusError, IOError, OSError:
+  except CatchableError:
     view.front.error = getCurrentExceptionMsg()
   if view.front.error.len > 0:
     view.sk.lobbyLabel(view.front.error, at + vec2(32, size.y - 38), size.x - 64)
+  else:
+    when not defined(emscripten):
+      if view.session != nil and view.session.replaySaving.savedPath.len > 0:
+        view.sk.lobbyLabel("Replay saved to your library.",
+          at + vec2(32, size.y - 38), size.x - 64)
   view.sk.endUi()
 
 proc debugStats(view: View): NetworkStats =
@@ -1036,14 +1105,16 @@ proc handleInput(view: View) =
       view.selection = (view.selection + 1) mod MainMenuItems.len
     if window.buttonPressed[KeyUp]:
       view.selection = (view.selection + MainMenuItems.len - 1) mod MainMenuItems.len
-    let overMenu = x in 80 .. 560 and y >= 120 and y < 120 + MainMenuItems.len * 46
+    let overMenu = x in 80 .. 560 and y >= MenuTop and
+      y < MenuTop + MainMenuItems.len * MenuStep
     if overMenu and window.mouseDelta != ivec2(0, 0):
-      view.selection = clamp((y - 120) div 46, 0, MainMenuItems.high)
+      view.selection = clamp((y - MenuTop) div MenuStep, 0, MainMenuItems.high)
     let
       previousPointer = pointer - window.mouseDelta.vec2 / view.sk.uiScale
       enteredItem = overMenu and window.mouseDelta != ivec2(0, 0) and
         not overlaps(previousPointer,
-          rect(80, (120 + view.selection * 46).float32, 480, 46))
+          rect(80, (MenuTop + view.selection * MenuStep).float32,
+            480, MenuStep.float32))
     if not window.buttonDown[MouseLeft] and
       (view.selection != previousSelection or enteredItem):
         view.front.emitUiCue(UiHover)
@@ -1188,7 +1259,11 @@ proc frame(view: View) =
   if view.screen == FrontScreen:
     view.front.draw(view.sk, view.window)
     if view.front.page == HomeMenu:
-      view.screen = MenuScreen
+      when defined(emscripten):
+        view.screen = MenuScreen
+      else:
+        if not view.front.browsingReplays:
+          view.screen = MenuScreen
     inc view.frames
     if view.options.screenshot.len > 0 and view.frames >= view.options.frames:
       view.capture()
@@ -1212,17 +1287,35 @@ proc frame(view: View) =
   if view.screen in {GameScreen, EndScreen}:
     if view.transport.player.restoreTick >= 0:
       view.effects.clear()
-    if view.transport.advancePlayback(
-      view.session,
-      elapsed.float32,
-      frameStart,
-      singleTick = view.options.screenshot.len > 0,
-      holdAtEnd = not view.card.terminal or
-        view.card.holding(now.ticks.float64 / 1e9)
-    ):
-      view.controls.holding = false
-      view.boardRevision = -1
-    view.syncResults(getMonoTime().ticks.float64 / 1e9)
+    try:
+      if view.transport.advancePlayback(
+        view.session,
+        elapsed.float32,
+        frameStart,
+        singleTick = view.options.screenshot.len > 0,
+        holdAtEnd = not view.card.terminal or
+          view.card.holding(now.ticks.float64 / 1e9)
+      ):
+        view.controls.holding = false
+        view.boardRevision = -1
+      view.syncResults(getMonoTime().ticks.float64 / 1e9)
+    except GalconError as error:
+      when not defined(emscripten):
+        if not view.session.playback:
+          raise
+        view.session.observer = nil
+        view.session.tickObserver = nil
+        view.session = nil
+        view.matchMenu = HiddenMatchMenu
+        view.chatting = false
+        view.chatInput.setLen(0)
+        view.controls.cancelGesture()
+        view.front.openReplays()
+        view.front.replayBrowser.message = error.msg
+        view.screen = FrontScreen
+        return
+      else:
+        raise
     let world = view.session.world
     if not view.session.inHistory:
       if world.captures > view.seenCaptures:
@@ -1370,6 +1463,9 @@ proc runGraphics*(options: Options) =
   view.front.preferences.applyPreferences(window, options.game.windowWidth == 0)
   if view.front.page != HomeMenu:
     view.screen = FrontScreen
+  when not defined(emscripten):
+    if view.front.browsingReplays:
+      view.screen = FrontScreen
   # All connection entry routes go through the identity-gated frontend pump.
   # Invite/autoconnect startup must not open a socket before confirmation.
   view.initSounds()
@@ -1385,15 +1481,31 @@ proc runGraphics*(options: Options) =
   window.onFrame = proc() =
     ## Presents one interactive game frame.
     view.frame()
-  while not window.closeRequested and not view.closing:
-    pollEvents()
+  while true:
+    while not window.closeRequested and not view.closing:
+      pollEvents()
+      when not defined(emscripten):
+        let browsing = view.front.browsingReplays
+        view.front.processReplayActions()
+        if browsing and not view.front.browsingReplays:
+          view.sk.resetInteractions()
+    view.finishSession()
+    if not window.closeRequested and not view.closing:
+      view.front.leave()
+      view.matchMenu = HiddenMatchMenu
+      view.chatting = false
+      view.chatInput.setLen(0)
+      view.controls.cancelGesture()
+      view.screen = MenuScreen
+      continue
+    break
 
   view.front.leave()
   view.front.onUiCue = nil
   if view.session != nil:
     view.session.observer = nil
     view.session.tickObserver = nil
-    view.session.finish()
+    view.finishSession()
   for source in [view.musicSource, view.launchSource, view.blastSource,
     view.captureSource, view.uiSources[UiHover], view.uiSources[UiClick]]:
       if source != nil:

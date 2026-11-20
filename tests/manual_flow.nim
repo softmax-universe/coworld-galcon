@@ -46,7 +46,6 @@ proc runFlowDemo(interactive: bool) =
   sk.theme = galconTheme()
   var
     scenario = 0
-    legacy = false
     enemies = false
     paused = false
     speed = 1.0
@@ -81,7 +80,6 @@ proc runFlowDemo(interactive: bool) =
         deadlockWorld(ClusteredDestinations)
       else:
         destinationFlowWorld(kind, enemies)
-    world.setup.legacyDeadlocks = legacy
     let session = Session(
       world: world, liveWorld: world, human: 1,
       maximumTicks: MaximumDemoTicks
@@ -148,7 +146,7 @@ proc runFlowDemo(interactive: bool) =
       lines = [
         if enemies: "Enemy fleets pass through."
           else: "Friendly fleets collide.",
-        if legacy: "Before: no deadlock escape" else: "Escape after 3 seconds stuck",
+        "Escape after 3 seconds stuck",
         "Arrived: " & $world.flowArrived() & " / " & $acceptedShips(),
         "Flying: " & $world.activeShips &
           "   Queued: " & $world.flowPending(),
@@ -184,7 +182,7 @@ proc runFlowDemo(interactive: bool) =
     for i, line in [
       "Speed: " & $speed & "x",
       "Space Pause / R Restart",
-      "S Speed / B Before and after"
+      "S Speed"
     ]:
       discard sk.drawRasterText("Chat", line,
         status + vec2(0, 184 + i.float32 * 20), Gray,
@@ -262,9 +260,6 @@ proc runFlowDemo(interactive: bool) =
           selectScenario(index)
       if window.buttonPressed[KeyTab]:
         selectScenario((scenario + 1) mod DemoTitles.len)
-      if window.buttonPressed[KeyB]:
-        legacy = not legacy
-        restart()
       if window.buttonPressed[KeyE]:
         selectScenario(if enemies: 0 else: 3)
       if window.buttonPressed[KeyS]:

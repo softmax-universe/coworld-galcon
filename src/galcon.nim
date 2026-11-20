@@ -27,10 +27,7 @@ proc main*() =
   ## Starts the local Galcon port or a Polyworld Coworld policy match.
   var options = commandOptions()
   when defined(coworld):
-    when compiles(coworldOptions(0, MaxTicks)):
-      options.game = coworldOptions(0, MaxTicks)
-    else:
-      options.game = coworldOptions(0)
+    options.game = coworldOptions(0)
     if options.game.maximumTicks <= 0 or options.game.maximumTicks > MaxTicks:
       raise newException(GalconError, "Coworld duration exceeds Galcon limits")
     options.playerCount = options.game.botGroups.botCount()

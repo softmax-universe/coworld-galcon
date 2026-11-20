@@ -131,24 +131,7 @@ type
     enemyShipsPassThrough*, neutralsDontProduce*: bool = true
     counts*: seq[int]
     balancedMap*: bool
-      ## Explicit generator switch; false preserves historical RNG/positions.
-      ## Fresh lobby MatchConfig enables it; zero/default and old tapes do not.
-    legacyBalancedMap*: bool
-      ## Version 20 and older preserve grid placement and perimeter homes.
-    legacyMovement*: bool
-      ## Version 14 and older preserve hard friendly collisions and FIFO retries.
-    legacyFlocking*: bool
-      ## Version 15 and older preserve the original local alignment steering.
-    legacyContacts*: bool
-      ## Version 16 and older allow moving friendly ships to overlap.
-    legacyRouteSteering*: bool
-      ## Version 17 and older preserve collision-driven heading alignment.
-    legacyCrossings*: bool
-      ## Version 18 and older preserve symmetric crossing pressure.
-    legacyDeadlocks*: bool
-      ## Version 19 and older never phase stalled ships through traffic.
-    legacyLaunches*: bool
-      ## Old replay orders describe immediate spawns, not accepted intentions.
+      ## Balances quadrant resources instead of using the selected placement.
   World* = ref object
     setup*: Setup
     rng*: Rng

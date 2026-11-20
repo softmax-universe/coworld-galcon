@@ -9,8 +9,8 @@ proc fixture(): World =
     p.ships = stock(100)
 
 proc testPendingLaunches*() =
-  doAssert ReplayVersion == 22,
-    "Unified launch and chat actions require the current replay version"
+  doAssert ReplayVersion == 23,
+    "The current-only setup requires its own replay format version"
   echo "Accepted 50% launches finish without another command"
   let world = fixture()
   let source = if world.planets[0].owner == 1: 0 else: 1
@@ -152,37 +152,20 @@ proc testPendingLaunches*() =
     for tick in 0 ..< loaded.hashes.len: loaded.replayTick(playback, cursor)
     doAssert playback.fingerprint() == w.fingerprint()
     removeFile(path)
-  echo "Current files retain immediate-spawn settings and reject version 12"
+  echo "Each game version accepts only its exact replay format"
   block:
-    let setup = configuredSetup(42, Easy, 2, 2)
-    setup.legacyLaunches = true
-    setup.legacyMovement = true
-    let w = newWorld(setup)
-    let s = if w.planets[0].owner == 1: 0 else: 1
-    let sent = w.send(1, s, 1 - s, 50)
-    doAssert sent > 0 and sent < 50
-    let tape = Recording(setup: setup)
-    for tick in 0 ..< 128:
-      w.advance()
-      tape.recordTick(w)
-    let path = Root / "build/launch-v12.replay"
-    let copy = Root / "build/launch-current-legacy.replay"
-    saveReplayFile(path, "galcon", 12, "unsupported")
-    var rejected = false
-    try:
-      discard loadRecording(path)
-    except GalconError as error:
-      rejected = error.msg.contains("version")
-    doAssert rejected
-    tape.save(copy)
-    let session = newSession(parseOptions(@["--replay", copy]))
-    doAssert session.world.setup.legacyLaunches
-    doAssert session.world.setup.legacyMovement
-    session.seek(128)
-    doAssert session.world.fingerprint() == w.fingerprint()
-    doAssert session.world.pendingLaunchCount == 0
-    removeFile(path)
-    removeFile(copy)
+    let path = Root / "build/unsupported-launch.replay"
+    defer: removeFile(path)
+    for version in 1'u16 .. ReplayVersion + 1:
+      if version == ReplayVersion:
+        continue
+      saveReplayFile(path, "galcon", version, "unsupported")
+      var rejected = false
+      try:
+        discard loadRecording(path)
+      except GalconError as error:
+        rejected = error.msg.contains("version")
+      doAssert rejected, "Different replay formats must never be migrated"
 
 when isMainModule:
   testPendingLaunches()

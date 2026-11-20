@@ -138,7 +138,7 @@ proc assertClearHulls*(world: World, tick: int, blend = 1.0) =
   for i, body in world.bodies:
     if not body.active or body.kind != ShipBody:
       continue
-    if body.escapeTicks > 0 and not world.setup.legacyDeadlocks:
+    if body.escapeTicks > 0:
       # Escaping ships deliberately phase through otherwise solid traffic.
       continue
     if blend == 0 and body.x == body.previousX and body.y == body.previousY:

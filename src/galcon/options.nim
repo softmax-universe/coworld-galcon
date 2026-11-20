@@ -164,7 +164,11 @@ proc parseOptions*(arguments: seq[string]): Options =
     of "--menu":
       result.menu = arguments.argumentValue(index, argument)
       if result.menu notin ["main", "multiplayer", "battle", "settings"]:
-        fail("--menu must be main, multiplayer, battle, or settings")
+        when defined(emscripten):
+          fail("--menu must be main, multiplayer, battle, or settings")
+        else:
+          if result.menu != "replays":
+            fail("--menu must be main, multiplayer, battle, settings, or replays")
     of "--server": result.server = arguments.argumentValue(index, argument)
     of "--name": result.name = arguments.argumentValue(index, argument)
     of "--join": result.join = arguments.argumentValue(index, argument)
@@ -209,6 +213,8 @@ proc parseOptions*(arguments: seq[string]): Options =
       echo "--vsync on|off"
       echo "--screenshot FILE --frames N"
       echo "--menu main|multiplayer|battle|settings --server URL --name NAME --join ROOM"
+      when not defined(emscripten):
+        echo "--menu replays: open the desktop replay library"
       quit(0)
     else:
       if not result.game.takeCommonFlag(arguments, index, argument):

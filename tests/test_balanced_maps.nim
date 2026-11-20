@@ -1,4 +1,4 @@
-import std/[algorithm, base64, os, sets, strutils]
+import std/[algorithm, os, sets]
 import jsony, polyworld/tapes
 import galcon/[common, worlds, replays, options, multiplayer]
 
@@ -168,8 +168,6 @@ proc testReplay() =
     doAssert readFile(path).replayFileHeader().gameVersion == ReplayVersion
     let loaded = loadRecording(path)
     doAssert loaded.setup.balancedMap == balanced, "Map mode survives replay serialization"
-    doAssert not loaded.setup.legacyBalancedMap,
-      "New recordings retain varied placement when saved and loaded"
     doAssert loaded.hashes == tape.hashes
     let playback = newWorld(loaded.setup)
     var cursor = 0
@@ -177,104 +175,12 @@ proc testReplay() =
     doAssert playback.fingerprint() == world.fingerprint()
     removeFile(path)
 
-proc testLegacyReplay() =
-  ## Current files preserve explicit map settings, without reading old formats.
-  let setup = configuredSetup(17, Easy, 4, 32)
-  setup.legacyMovement = true
-  let world = newWorld(setup)
-  let recording = Recording(setup: setup)
-  for tick in 0 ..< 32:
-    world.advance()
-    recording.recordTick(world)
-  let path = Root / "build/balanced-legacy13.replay"
-  let copy = Root / "build/balanced-current-legacy.replay"
-  saveReplayFile(path, "galcon", 13, "unsupported")
-  var rejected = false
-  try:
-    discard loadRecording(path)
-  except GalconError as error:
-    rejected = error.msg.contains("version")
-  doAssert rejected
-  recording.save(copy)
-  let tape = loadRecording(copy)
-  doAssert not tape.setup.balancedMap and not tape.setup.legacyLaunches
-  doAssert tape.setup.legacyMovement
-  let playback = newWorld(tape.setup)
-  var cursor = 0
-  for tick in 0 ..< tape.hashes.len: tape.replayTick(playback, cursor)
-  doAssert playback.fingerprint() == world.fingerprint()
-  removeFile(path)
-  removeFile(copy)
-
-proc testLegacyBalancedReplay() =
-  ## Captured before varied placement: v20, seed17/Easy/4 players/32 planets.
-  const
-    InitialHash = 4588863931359644885'u64
-    FinalHash = 12458984394461214843'u64
-    Fixture =
-      "UE9MWVdPUkxEUkVQTEFZAgAUAAYAZ2FsY29uEQAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAUAAAAA" &
-      "AAAAHAAAAAAAAAABAAAAAAAAAAEAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAB" &
-      "AQAAAAAAAAAAIAAAAAAAAAB66R69JhkHZvwONDDdDD/v698lpSwi/iF3flAQZxrGSp0JsW0u6MDoUPvx" &
-      "JFcg7Bq6M6Gi/koKNeJlc7CxanugJAus6xa9ua68F3kqBhiASJBUNARmNqTtMukjT9cvu/tq8H9iU1Dj" &
-      "9rbrxrfN+N3aB9vTU/HgFWB5qJxLNN+c/ZHudOafqLj7p+iCyi6dmz8N4W6lsIgtjs/kSbKOiyjPmZtt" &
-      "5u9Ew7sNn3rWzdPe2JWfyoDHSZHyYvN0DLCq6JlEju9pYmz9/0A+hBxnIssZdZbnpKI+RFHwAxG39n/f" &
-      "2oXlySG8ESCKj+8v/B0t6jbX3a0Dpy0Rknv4/tVLNOesAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAA"
-  let path = Root / "build/balanced-legacy20.replay"
-  let copy = Root / "build/balanced-legacy-upgraded.replay"
-  writeFile(path, base64.decode(Fixture))
-  doAssert readFile(path).replayFileHeader().gameVersion == 20
-  var rejected = false
-  try:
-    discard loadRecording(path)
-  except GalconError as error:
-    rejected = error.msg.contains("version")
-  doAssert rejected, "The frozen version 20 file must be rejected explicitly"
-  let setup = configuredSetup(17, Easy, 4, 32)
-  setup.balancedMap = true
-  setup.legacyBalancedMap = true
-  let world = newWorld(setup)
-  doAssert world.fingerprint() == InitialHash,
-    "Explicit historical placement retains its positions and RNG state"
-  let recording = Recording(setup: setup)
-  for tick in 0 ..< 32:
-    world.advance()
-    recording.recordTick(world)
-  doAssert world.fingerprint() == FinalHash
-  recording.save(copy)
-  let tape = loadRecording(copy)
-  doAssert tape.setup.balancedMap and tape.setup.legacyBalancedMap
-  doAssert tape.setup.clone().legacyBalancedMap
-  let playback = newWorld(tape.setup)
-  var cursor = 0
-  for tick in 0 ..< tape.hashes.len: tape.replayTick(playback, cursor)
-  doAssert tape.hashes.len == 32 and playback.fingerprint() == FinalHash,
-    "Current files retain the selected historical placement mode"
-  removeFile(path)
-  removeFile(copy)
-
-proc testLegacyFingerprints() =
-  # Captured from HEAD 135afd6 using its common/worlds/physics/spaces sources.
-  const Expected = [
-    [9513823520648979471'u64, 11798626085132050013'u64, 9466632345067519230'u64],
-    [15180347488718544099'u64, 16481180551950526177'u64, 18202625695735639318'u64],
-    [8459055772431598712'u64, 523097342836221721'u64, 13194352398586763394'u64]]
-  for s, seed in [0'i32, 17'i32, 98'i32]:
-    for p, placement in [RandomPlacement, ClassicPlacement, ClusteredPlacement]:
-      let setup = configuredSetup(seed, Easy, 4, 32)
-      setup.balancedMap = false
-      setup.legacyMovement = true
-      setup.placement = placement
-      doAssert newWorld(setup).fingerprint() == Expected[s][p],
-        "Unchecked maps preserve historical positions, RNG state and complete hashes"
-
 proc testBalancedMaps*() =
-  testLegacyFingerprints()
+  ## Checks current placement, replay roundtrips, and multiplayer map settings.
   testConfig()
   testMaps()
   testMapVariation()
   testReplay()
-  testLegacyReplay()
-  testLegacyBalancedReplay()
 
 when isMainModule:
   testBalancedMaps()

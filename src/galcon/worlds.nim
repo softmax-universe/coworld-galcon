@@ -146,11 +146,8 @@ proc placePlanets(world: World) =
     world.bodies[planet.body].x = planet.x
     world.bodies[planet.body].y = planet.y
 
-proc arrangeLegacyBalanced(world: World, homes: seq[int]) =
-  ## Match production/radii in complete groups of four, not mirrored positions.
-  ## Remainders add one planet in opposite-first quadrant order; populations
-  ## therefore differ by at most one and full groups keep identical sizes.
-  ## Home-sized neutral counterparts stay neutral (including morale).
+proc arrangeBalancedGrid(world: World, homes: seq[int]) =
+  ## Provides a bounded grid fallback with equal quadrant resource groups.
   const Quadrants = [0, 3, 1, 2]
   let
     compact = world.planets.len > CompactPlanetThreshold or
@@ -345,7 +342,7 @@ proc arrangeBalanced(world: World, homes: seq[int]) =
         break
     if not placed:
       # An exceptional packed seed still gets a valid, fair map.
-      world.arrangeLegacyBalanced(homes)
+      world.arrangeBalancedGrid(homes)
       return
   for planet in world.planets:
     world.bodies[planet.body].x = planet.x
@@ -459,10 +456,7 @@ proc newWorld*(setup: Setup): World =
     if initial.home: homes.add result.planets.len
     result.planets.add planet
   if setup.balancedMap:
-    if setup.legacyBalancedMap:
-      result.arrangeLegacyBalanced(homes)
-    else:
-      result.arrangeBalanced(homes)
+    result.arrangeBalanced(homes)
   elif setup.placement == ClusteredPlacement:
     result.arrangeClusters()
   if setup.balancedMap:
@@ -494,121 +488,93 @@ proc validPlanet*(world: World, index: int): bool {.raises: [].} =
   ## Checks one stable planet index at API boundaries.
   index >= 0 and index < world.planets.len
 
-proc emitLaunch(world: World, player, source, target, amount: int, opening = -1): int =
-  ## Emits a bounded batch; pending orders already hold their stocks in escrow.
+proc emitLaunch(world: World, player, source, target, opening: int): int =
+  ## Emits one queued ship through an opening without reserving stock again.
   if player < 1 or player > world.setup.players or
     not world.validPlanet(source) or not world.validPlanet(target) or
-    source == target or amount <= 0:
+    source == target:
       return
   if world.planets[source].owner != player:
     return
   let
-    count = amount
     a = world.planets[source]
     b = world.planets[target]
     radius = a.radius + ShipRadius + 1
     positions = radius * 6 div (ShipRadius * 2 + 1)
-    heading = arctan2(b.y - a.y, b.x - a.x)
-  if count <= 0:
+    offset =
+      if opening mod 2 == 1: (opening + 1) div 2
+      else: -(opening div 2)
+    angle = FixedTau * fixed(offset.int32) / fixed(positions.int32)
+    x = a.x + cos(angle) * fixed(radius.int32)
+    y = a.y + sin(angle) * fixed(radius.int32)
+  if not world.spawnClear(x, y):
     return
-  for i in (if opening < 0: 0 else: opening) ..< (if opening < 0: positions else: opening + 1):
-    if result == count:
-      break
-    let
-      offset = if i mod 2 == 1: (i + 1) div 2 else: -(i div 2)
-      angle = (if opening < 0: heading else: FixedZero) + FixedTau * fixed(offset.int32) /
-        fixed(positions.int32)
-      x = a.x + cos(angle) * fixed(radius.int32)
-      y = a.y + sin(angle) * fixed(radius.int32)
-    if not world.spawnClear(x, y):
-      continue
-    let slot = world.freeBody()
-    if slot < 0:
-      break
-    world.bodies[slot] = Body(
-      active: true,
-      kind: ShipBody,
-      x: x,
-      y: y,
-      previousX: x,
-      previousY: y,
-      targetX: b.x,
-      targetY: b.y,
-      routeX: a.x,
-      routeY: a.y,
-      routeReady: true,
-      target: b.body,
-      radius: fixed(ShipRadius),
-      weight: 1,
-      speed: FixedOne
-    )
-    world.indexSpawn(slot)
-    world.ships[slot] = Ship(owner: player, target: target)
-    if world.setup.legacyLaunches:
-      world.planets[source].ships -= stock(1)
-    inc world.planets[target].incoming[player]
-    inc world.activeShips
-    inc result
-  if result > 0 and world.setup.legacyLaunches:
-    world.orders.add Order(
-      tick: world.tick,
-      player: player.int32,
-      source: source.int32,
-      target: target.int32,
-      count: result.int32,
-      sequence: world.actionSequence
-    )
-    inc world.actionSequence
+  let slot = world.freeBody()
+  if slot < 0:
+    return
+  world.bodies[slot] = Body(
+    active: true,
+    kind: ShipBody,
+    x: x,
+    y: y,
+    previousX: x,
+    previousY: y,
+    targetX: b.x,
+    targetY: b.y,
+    routeX: a.x,
+    routeY: a.y,
+    routeReady: true,
+    target: b.body,
+    radius: fixed(ShipRadius),
+    weight: 1,
+    speed: FixedOne
+  )
+  world.indexSpawn(slot)
+  world.ships[slot] = Ship(owner: player, target: target)
+  inc world.planets[target].incoming[player]
+  inc world.activeShips
+  1
 
 proc drainLaunches(world: World) =
-  ## Stable FIFO compaction keeps retries bounded and independent of frame rate.
-  if not world.setup.legacyMovement:
-    # One ring sweep per source, shared fairly by its queued destinations.
-    # Every successful slot is indexed immediately; no retries enter the tape.
-    var nextOrder: array[MaxPlanets, int]
-    for source in 0 ..< world.planets.len:
+  ## Shares one ring sweep per source fairly among its queued destinations.
+  var nextOrder: array[MaxPlanets, int]
+  for source in 0 ..< world.planets.len:
+    nextOrder[source] = -1
+  for offset in 0 ..< world.pendingLaunchCount:
+    let i = (offset + world.tick.int mod world.pendingLaunchCount) mod
+      world.pendingLaunchCount
+    let order = addr world.pendingLaunches[i]
+    if order.count <= 0 or world.planets[order.source].owner != order.player.int:
+      order.count = 0
+    elif nextOrder[order.source] < 0:
+      nextOrder[order.source] = i
+  for source in 0 ..< world.planets.len:
+    if nextOrder[source] < 0:
+      continue
+    let
+      radius = world.planets[source].radius + ShipRadius + 1
+      positions = radius * 6 div (ShipRadius * 2 + 1)
+    for opening in 0 ..< positions:
+      let index = nextOrder[source]
+      if index < 0:
+        break
+      let order = addr world.pendingLaunches[index]
+      let emitted = world.emitLaunch(
+        order.player.int, source, order.target.int, opening)
+      if emitted == 0:
+        continue
+      dec order.count
       nextOrder[source] = -1
-    for offset in 0 ..< world.pendingLaunchCount:
-      let i = (offset + world.tick.int mod world.pendingLaunchCount) mod world.pendingLaunchCount
-      let order = addr world.pendingLaunches[i]
-      if order.count <= 0 or world.planets[order.source].owner != order.player.int:
-        order.count = 0
-      elif nextOrder[order.source] < 0:
-        nextOrder[order.source] = i
-    for source in 0 ..< world.planets.len:
-      if nextOrder[source] < 0: continue
-      let radius = world.planets[source].radius + ShipRadius + 1
-      let positions = radius * 6 div (ShipRadius * 2 + 1)
-      for opening in 0 ..< positions:
-        let index = nextOrder[source]
-        if index < 0: break
-        let order = addr world.pendingLaunches[index]
-        let emitted = world.emitLaunch(order.player.int, source, order.target.int, 1, opening)
-        if emitted == 0: continue
-        dec order.count
-        nextOrder[source] = -1
-        for offset in 1 .. world.pendingLaunchCount:
-          let candidate = (index + offset) mod world.pendingLaunchCount
-          if world.pendingLaunches[candidate].source == source.int32 and
-            world.pendingLaunches[candidate].count > 0:
-              nextOrder[source] = candidate
-              break
-    var kept = 0
-    for i in 0 ..< world.pendingLaunchCount:
-      if world.pendingLaunches[i].count > 0:
-        world.pendingLaunches[kept] = world.pendingLaunches[i]
-        inc kept
-    world.pendingLaunchCount = kept
-    return
+      for offset in 1 .. world.pendingLaunchCount:
+        let candidate = (index + offset) mod world.pendingLaunchCount
+        if world.pendingLaunches[candidate].source == source.int32 and
+          world.pendingLaunches[candidate].count > 0:
+            nextOrder[source] = candidate
+            break
   var kept = 0
   for i in 0 ..< world.pendingLaunchCount:
-    var order = world.pendingLaunches[i]
-    if order.count <= 0 or world.planets[order.source].owner != order.player.int:
-      continue # Capture destroys the former owner's unlaunched escrow.
-    order.count -= world.emitLaunch(order.player.int, order.source.int,
-      order.target.int, order.count.int).int32
-    if order.count > 0:
-      world.pendingLaunches[kept] = order
+    if world.pendingLaunches[i].count > 0:
+      world.pendingLaunches[kept] = world.pendingLaunches[i]
       inc kept
   world.pendingLaunchCount = kept
 
@@ -621,8 +587,6 @@ proc launch*(world: World, player, source, target, amount: int): int =
   let count = min(min(amount, int32.high.int), world.planets[source].shipCount)
   if count <= 0:
     return
-  if world.setup.legacyLaunches:
-    return world.emitLaunch(player, source, target, count)
   if world.pendingLaunchCount == MaxPendingLaunches:
     return
   let order = Order(tick: world.tick, player: player.int32,
@@ -633,8 +597,6 @@ proc launch*(world: World, player, source, target, amount: int): int =
   inc world.pendingLaunchCount
   world.orders.add order
   inc world.actionSequence
-  if world.setup.legacyMovement:
-    world.drainLaunches()
   count
 
 proc send*(world: World, player, source, target, percent: int): int =
@@ -720,8 +682,7 @@ proc advance*(world: World, observer: ArrivalObserver = nil) {.measure.} =
           ))
       body.active = false
       dec world.activeShips
-  if not world.setup.legacyLaunches:
-    world.drainLaunches()
+  world.drainLaunches()
   var
     counts: array[MaxPlayers + 1, int]
     initialPlayers = 0
@@ -778,21 +739,14 @@ proc fingerprint*(world: World): uint64 {.measure.} =
   template mixFixed(value: Fixed) =
     mix(cast[uint32](int32(value)).uint64)
   if world.setup.balancedMap:
-    mix(0x42414c414e434544'u64) # Opt-in only: old fingerprints are unchanged.
-    if not world.setup.legacyBalancedMap:
-      mix(0x5343415454455231'u64)
-  if not world.setup.legacyMovement:
-    mix(0x464c4f434b3135'u64)
-    if not world.setup.legacyFlocking:
-      mix(0x464c4f573136'u64)
-      if not world.setup.legacyContacts:
-        mix(0x434f4e5441435431'u64)
-        if not world.setup.legacyRouteSteering:
-          mix(0x524f5554453138'u64)
-          if not world.setup.legacyCrossings:
-            mix(0x43524f53533139'u64)
-            if not world.setup.legacyDeadlocks:
-              mix(0x4553434150453230'u64)
+    mix(0x42414c414e434544'u64)
+    mix(0x5343415454455231'u64)
+  mix(0x464c4f434b3135'u64)
+  mix(0x464c4f573136'u64)
+  mix(0x434f4e5441435431'u64)
+  mix(0x524f5554453138'u64)
+  mix(0x43524f53533139'u64)
+  mix(0x4553434150453230'u64)
   mix(world.tick.uint64)
   mix(world.rng.state)
   mix(world.bodyCursor.uint64)
@@ -838,19 +792,14 @@ proc fingerprint*(world: World): uint64 {.measure.} =
       if body.kind == ShipBody:
         mix(world.ships[i].owner.uint64)
         mix(world.ships[i].target.uint64)
-        if not world.setup.legacyMovement and not world.setup.legacyFlocking and
-          not world.setup.legacyContacts:
-            mixFixed(world.neighborPressure[i])
-            if not world.setup.legacyRouteSteering:
-              mixFixed(body.routeX)
-              mixFixed(body.routeY)
-              mix(uint64(body.routeReady))
-              if not world.setup.legacyCrossings and
-                not world.setup.legacyDeadlocks:
-                  mixFixed(body.progressDistance)
-                  mix(body.stalledTicks.uint64)
-                  mix(body.escapeTicks.uint64)
-                  mix(uint64(body.progressReady))
+        mixFixed(world.neighborPressure[i])
+        mixFixed(body.routeX)
+        mixFixed(body.routeY)
+        mix(uint64(body.routeReady))
+        mixFixed(body.progressDistance)
+        mix(body.stalledTicks.uint64)
+        mix(body.escapeTicks.uint64)
+        mix(uint64(body.progressReady))
   if world.pendingLaunchCount > 0:
     mix(0x4c41554e4348'u64)
     mix(world.pendingLaunchCount.uint64)

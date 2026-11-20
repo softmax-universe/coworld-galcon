@@ -240,7 +240,6 @@ proc testParallelHullClearance*() =
   ## Nearby parallel triangles use clear lanes inside their enclosing circles.
   echo "Parallel ships use the free space between their actual hulls"
   let world = World(setup: defaultSetup(), winner: -1)
-  doAssert not world.setup.legacyCrossings
   world.addRouteTestShip(0, 200, 200, 600, 200)
   world.addRouteTestShip(1, 200, 209, 600, 209)
   var isolated: array[2, World]
@@ -350,9 +349,6 @@ proc testFlowRoutes*() =
     doAssert not world.spawnClear(fixed(113), fixed(240)),
       "A new opposing nose must not touch a friendly outline before movement"
     doAssert world.spawnClear(fixed(114), fixed(240))
-    world.setup.legacyRouteSteering = true
-    doAssert world.spawnClear(fixed(113), fixed(240)),
-      "Historical replay launches must keep their original clearance"
   testRouteRecovery()
   testFacingIndependentMovement()
   testParallelHullClearance()

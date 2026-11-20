@@ -1,9 +1,10 @@
 import polyworld/[rooms, relays]
+import galcon/multiplayer
 
 proc testLobbyRelay*() =
   ## Exercises shared slot permissions without game-name startup exceptions.
   let relay = Relay()
-  let game = GameIdentity(game: "galcon", gameplay: 22, protocol: 4)
+  let game = identity()
   proc send(connection: int, message: RoomMessage) =
     ## Passes commands through the wire codec and actual relay.
     relay.receive(connection, decode(message.encode()), 0)

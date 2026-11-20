@@ -119,9 +119,8 @@ proc testFairness*() =
   doAssert first.scores() == @[0, 0, 1, 0, 0]
   first.winner = 0
   doAssert first.scores() == @[0, 0, 0, 0, 0]
-  echo "Current files retain classic positions and reject version 6"
+  echo "Current files retain explicit placement and reject other versions"
   let setup = configuredSetup(8, Easy, 5, 26)
-  setup.legacyMovement = true
   setup.placement = ClassicPlacement
   setup.enemyShipsPassThrough = false
   setup.neutralsDontProduce = false
@@ -132,7 +131,7 @@ proc testFairness*() =
     recording.recordTick(world)
   let
     path = Root / "build" / "version6.replay"
-    upgradedPath = Root / "build" / "version6-upgraded.replay"
+    currentPath = Root / "build" / "classic-current.replay"
   saveReplayFile(path, "galcon", 6, "unsupported")
   var rejected = false
   try:
@@ -140,16 +139,15 @@ proc testFairness*() =
   except GalconError as error:
     rejected = error.msg.contains("version")
   doAssert rejected
-  recording.save(upgradedPath)
-  let loaded = loadRecording(upgradedPath)
+  recording.save(currentPath)
+  let loaded = loadRecording(currentPath)
   doAssert loaded.setup.placement == ClassicPlacement
-  doAssert loaded.setup.legacyMovement
   doAssert loaded.hashes == recording.hashes
   let playback = newWorld(loaded.setup)
   var cursor = 0
   for i in 0 ..< loaded.hashes.len:
     loaded.replayTick(playback, cursor)
   doAssert playback.fingerprint() == world.fingerprint()
-  doAssert readFile(upgradedPath).replayFileHeader().gameVersion == ReplayVersion
+  doAssert readFile(currentPath).replayFileHeader().gameVersion == ReplayVersion
   removeFile(path)
-  removeFile(upgradedPath)
+  removeFile(currentPath)

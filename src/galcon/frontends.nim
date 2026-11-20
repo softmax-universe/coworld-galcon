@@ -4,6 +4,10 @@ import
   polyworld/[menus, lobbies, connections, chrome, policies, inputs, displays],
   common, options, sessions, worlds, bots, multiplayer, themes, rasters
 
+when not defined(emscripten):
+  import polyworld/replaysaves, replays, replaylibraries, replaymenus,
+    replaysettings
+
 export menus, connections
 
 const
@@ -24,6 +28,13 @@ type
     prepared*: NetworkMatch
     launch*: Session
     error*: string
+    when not defined(emscripten):
+      replayPreferences*: ReplayPreferences
+      unsavedReplays*: seq[Recording]
+      replayBrowser*: ReplayBrowserState
+      browsingReplays*: bool
+      replayAction: ReplayBrowserResult
+      retryReplayRequested: bool
     onUiCue*: proc(cue: UiCue)
     roomName: string
     matchName: string
@@ -136,6 +147,12 @@ proc newFrontend*(options: Options): Frontend =
     result.preferences = readPreferences(AppName)
   except MenusError, IOError, OSError:
     result.error = getCurrentExceptionMsg()
+  when not defined(emscripten):
+    result.replayBrowser = initReplayBrowser(Library)
+    try:
+      result.replayPreferences = readReplayPreferences()
+    except MenusError, IOError, OSError:
+      result.error = getCurrentExceptionMsg()
   if getConfig(AppName, "settings.json").len == 0:
     result.preferences.bindings = GalconControls.defaults
   result.invite = inviteParameter("room")
@@ -150,14 +167,19 @@ proc newFrontend*(options: Options): Frontend =
   of "multiplayer": result.page = MultiplayerMenu
   of "battle": result.page = SingleMenu
   of "settings": result.page = SettingsMenu
+  of "replays":
+    when not defined(emscripten):
+      result.browsingReplays = true
   else: discard
   result.pendingJoin = result.invite.len > 0
   result.autoConnect = result.pendingJoin or options.server.len > 0
   if result.pendingJoin:
     result.page = MultiplayerMenu
+    when not defined(emscripten):
+      result.browsingReplays = false
 
 proc confirmedPlayerName(name: string): bool =
-  ## Legacy auto-saved Player is not an identity; never rewrite valid names.
+  ## Requires a confirmed name instead of the automatic Player placeholder.
   name.len <= 64 and validName(name) and name.strip().toLowerAscii() != "player"
 
 proc needsPlayerName*(front: Frontend): bool =
@@ -231,6 +253,64 @@ proc leave*(front: Frontend) =
   front.autoSeatPending = false
   front.autoSeatClaim = -1
   front.revision = 0
+
+when not defined(emscripten):
+  proc openReplays*(front: Frontend) =
+    ## Opens the local library after releasing any previous room membership.
+    front.leave()
+    front.browsingReplays = true
+    front.replayBrowser.refreshRequested = true
+    front.replayBrowser.message = front.error
+    front.replayAction = ReplayBrowserResult()
+
+  proc retryPendingReplays*(front: Frontend) =
+    ## Keeps retained recordings until each shared library write succeeds.
+    try:
+      front.unsavedReplays.retryReplaySaves(
+        proc(recording: Recording): string =
+          ## Stores one retained Galcon recording in its user library.
+          saveLibraryReplay(recording)
+      )
+      front.error = ""
+      front.replayBrowser.refreshRequested = true
+    except CatchableError as error:
+      front.error = "Cannot save replay: " & error.msg
+
+  proc processReplayActions*(front: Frontend) =
+    ## Performs desktop dialogs and replay loading after window event polling.
+    if front.retryReplayRequested:
+      front.retryReplayRequested = false
+      front.retryPendingReplays()
+    let action = front.replayAction
+    front.replayAction = ReplayBrowserResult()
+    if not front.browsingReplays:
+      return
+    let selected = front.replayBrowser.updateReplayBrowser(Library, action)
+    case selected.action
+    of BackFromReplays:
+      front.browsingReplays = false
+      front.page = HomeMenu
+    of PlayReplay:
+      try:
+        front.launch = newSession(parseOptions(@["--replay", selected.path]))
+        front.error = ""
+        front.replayBrowser.message = ""
+      except CatchableError as error:
+        front.replayBrowser.message = error.msg
+    else:
+      discard
+
+  proc drawReplayNotice*(front: Frontend, sk: Silky, at: Vec2,
+      width = 600.0'f) =
+    ## Shows a retained-save retry and its latest error in Galcon's theme.
+    var messageAt = at
+    if front.unsavedReplays.len > 0:
+      if front.menuButton(sk, "Retry saving replay", at, min(300.0'f, width)):
+        front.retryReplayRequested = true
+      messageAt.y += 48
+    if front.error.len > 0:
+      sk.lobbyLabel(sk.fittedLabel(front.error, width, "LobbyBody"),
+        messageAt, width, tint = rgbx(255, 140, 130, 255))
 
 proc createRoom*(front: Frontend) =
   ## Defaults new online rooms independently of the local roster preference.
@@ -813,6 +893,18 @@ proc battle(front: Frontend, sk: Silky, window: Window, layout: LobbyLayout) =
   sk.lobbyLabel(if online: "Shuffles host-owned slots only; guests keep their seats."
     else: "each color is an independent player",
     fill + vec2(0, 54), 880, tint = LobbyMuted)
+  when not defined(emscripten):
+    let previousSave = front.replayPreferences.saveReplay
+    sk.at = layout.left + vec2(24, layout.panelHeight - 40)
+    if not modal:
+      front.menuCheckBox(sk, window, "Save replay",
+        front.replayPreferences.saveReplay)
+    else:
+      sk.lobbyLabel("Save replay: " &
+        (if front.replayPreferences.saveReplay: "On" else: "Off"),
+        sk.at, 300, tint = LobbyMuted)
+    if previousSave != front.replayPreferences.saveReplay:
+      front.replayPreferences.saveReplayPreferences()
   front.configPanel(sk, window, layout.right, layout.panelHeight, enabled and owner)
   if front.menuButton(sk, "back", layout.footer, 190, enabled = not modal):
     if online:
@@ -1043,10 +1135,7 @@ proc settings*(front: Frontend, sk: Silky, window: Window, at: Vec2): bool =
     sk.lobbyLabel("0 fps = unlimited", p + vec2(0, 380), 860, tint = LobbyMuted)
   of 1:
     sk.at = p
-    when compiles(front.preferences.soundMuted):
-      front.menuCheckBox(sk, window, "mute all sound", front.preferences.soundMuted)
-    else:
-      sk.lobbyLabel("Set main volume to 0 to mute", p, 860, tint = LobbyMuted)
+    sk.lobbyLabel("Set main volume to 0 to mute", p, 860, tint = LobbyMuted)
     front.settingSlider(sk, window, 1, "main volume", front.preferences.mainVolume,
       p + vec2(0, 70), 0, 100)
     front.settingSlider(sk, window, 2, "music volume", front.preferences.musicVolume,
@@ -1144,6 +1233,11 @@ proc identityUi*(front: Frontend, sk: Silky, window: Window): bool =
 
 proc draw*(front: Frontend, sk: Silky, window: Window) =
   ## Renders native Silky menus and reports launch transitions to the game view.
+  when not defined(emscripten):
+    if front.browsingReplays:
+      front.replayAction = sk.drawReplayBrowser(window, front.replayBrowser)
+      sk.endUi()
+      return
   let title = case front.page
     of SettingsMenu: "settings"
     of MultiplayerMenu: "multiplayer"
@@ -1167,6 +1261,11 @@ proc draw*(front: Frontend, sk: Silky, window: Window) =
   if front.error.len > 0:
     sk.drawLabel(front.error, layout.origin + vec2(32, 866), vec2(1450, 30),
       rgbx(255, 140, 130, 255), "Default")
+  when not defined(emscripten):
+    if front.unsavedReplays.len > 0 and not wasModal:
+      if front.menuButton(sk, "Retry saving replay",
+        layout.origin + vec2(32, 84), 300):
+          front.retryReplayRequested = true
   if window.buttonPressed[KeyEscape] and not wasModal:
       if front.online:
         front.connection.client.send(RoomMessage(kind: LeaveRoom))

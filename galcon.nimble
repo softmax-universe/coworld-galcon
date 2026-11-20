@@ -6,7 +6,7 @@ srcDir = "src"
 bin = @["galcon"]
 
 requires "nim >= 2.2.10"
-requires "https://github.com/Metta-AI/polyworld"
+requires "https://github.com/softmax-universe/polyworld"
 requires "https://github.com/treeform/bassy"
 requires "https://github.com/treeform/fixxy"
 requires "silky"

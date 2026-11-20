@@ -6,6 +6,9 @@ import
 when defined(coworld):
   import polyworld/coworld
 
+when not defined(emscripten):
+  import polyworld/replaysaves, replaylibraries
+
 const
   CheckpointTicks* = TickRate * 4
   MaxCheckpoints* = 64
@@ -32,6 +35,10 @@ type
       ## Optional viewer sampling stays outside recorded simulation state.
     historyMargin*: int32
       ## A viewer may replay a short lead-in to reconstruct transient art.
+    when not defined(emscripten):
+      replaySaving*: ReplaySaveState
+      replaySaveError*: string
+      replayExitHandled*: bool
 
 proc displayName*(session: Session, owner: int): string =
   ## Names are opaque; color belongs to the separate faction chip/tint.
@@ -176,6 +183,49 @@ proc saveRecording*(session: Session, path: string) =
   if not session.keepHistory:
     raise newException(GalconError, "This headless match was not recorded")
   session.recording.save(path)
+
+when not defined(emscripten):
+  proc recordingData*(session: Session): Recording =
+    ## Copies the complete authoritative tape even while viewing older ticks.
+    if session == nil or session.playback or not session.keepHistory or
+      session.recording == nil or session.liveWorld == nil:
+        raise newException(GalconError, "There is no live match replay to save.")
+    if session.recording.hashes.len != session.liveWorld.tick.int:
+      raise newException(GalconError,
+        "The recording is missing the latest simulation tick.")
+    session.recording.validate()
+    session.recording.clone()
+
+  proc saveLibraryRecording*(session: Session): string =
+    ## Saves each completed action prefix once through the shared save state.
+    if session == nil or session.playback:
+      raise newException(GalconError, "There is no live match replay to save.")
+    session.replaySaving.requestReplaySave()
+    let data = session.recordingData()
+    result = session.replaySaving.saveReplaySnapshot(data,
+      proc(recording: Recording): string =
+        ## Writes one validated Galcon tape to its desktop replay library.
+        saveLibraryReplay(recording)
+    )
+    session.replaySaveError = ""
+
+  proc updateReplaySaving*(session: Session, automatic: bool) =
+    ## Makes one completion save attempt without retrying failed writes per frame.
+    if session == nil or session.playback or session.liveWorld == nil:
+      return
+    let completed = session.done or session.liveWorld.winner >= 0 or
+      session.liveWorld.tick >= session.maximumTicks
+    if session.replaySaving.beginAutomaticReplaySave(automatic, completed):
+      try:
+        discard session.saveLibraryRecording()
+      except CatchableError as error:
+        session.replaySaveError = "Cannot save replay: " & error.msg
+
+  proc finishReplaySaving*(session: Session, automatic: bool) =
+    ## Saves partial matches and retries failed manual requests on exit.
+    if session != nil and not session.playback and
+      session.replaySaving.shouldSaveReplayOnExit(automatic):
+        discard session.saveLibraryRecording()
 
 proc finish*(session: Session) =
   ## Saves one completed or interrupted match from its authoritative live tape.

@@ -127,7 +127,7 @@ doAssert view.screen == HelpScreen and cues[UiClick] == 1,
 key(KeyEscape)
 key(KeyUp)
 doAssert view.screen == MenuScreen and view.selection == 3
-point(100, 120 + 3 * 46 + 20)
+point(100, MenuTop + 3 * MenuStep + 20)
 view.handleInput()
 window.state.perFrame = PerFrame()
 let menuHoverCount = cues[UiHover]
@@ -143,8 +143,6 @@ view.front.preferences.mainVolume = 0
 view.front.preferences.musicVolume = 25
 view.front.preferences.fxVolume = 50
 view.front.preferences.uiVolume = 60
-when compiles(view.front.preferences.soundMuted):
-  view.front.preferences.soundMuted = false
 view.initSounds()
 doAssert view.musicSource != nil and view.musicSource.playing and
   view.musicSource.looping and view.musicSource.gain == 0,

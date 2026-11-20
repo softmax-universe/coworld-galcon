@@ -4,7 +4,7 @@ import
   common, worlds, profiles, chats
 
 const
-  ReplayVersion* = 22'u16
+  ReplayVersion* = 23'u16
   MaxTicks* = TickRate * 60 * 30
   MaxOrders* = 1_000_000
 
@@ -52,43 +52,23 @@ proc recordTick*(recording: Recording, world: World) {.measure.} =
   world.chatOrderCount = 0
   recording.hashes.add world.fingerprint()
 
-proc save*(recording: Recording, path: string) =
-  ## Writes the current action stream behind Polyworld's portable file header.
-  try:
-    saveReplayFile(path, "galcon", ReplayVersion, RecordingData(
-      setup: recording.setup, actions: recording.actions,
-      hashes: recording.hashes, names: recording.names
-    ))
-  except IOError, OSError, ReplayError:
-    raise newException(
-      GalconError,
-      "Cannot save replay: " & getCurrentExceptionMsg()
-    )
-
-proc loadRecording*(path: string): Recording =
-  ## Rejects obsolete layouts and validates one ordered sequence of actions.
-  try:
-    let data = decodeReplayFile("galcon", ReplayVersion,
-      readFile(path), RecordingData)
-    result = Recording(setup: data.setup, actions: data.actions,
-      hashes: data.hashes, names: data.names)
-  except IOError, OSError, ReplayError, ValueError, FlattyError, IndexDefect:
-    raise newException(
-      GalconError,
-      "Cannot load replay: " & getCurrentExceptionMsg()
-    )
-  if result.hashes.len > MaxTicks or
-    result.actions.len > MaxOrders + MaxReplayChats:
+proc recordingCounts(recording: Recording): tuple[launches, messages: int] =
+  ## Validates one ordered sequence without changing its recorder counters.
+  if recording == nil:
+    raise newException(GalconError, "There is no replay recording")
+  if recording.hashes.len > MaxTicks or
+    recording.actions.len > MaxOrders + MaxReplayChats:
       raise newException(GalconError, "Replay limits exceeded")
-  if result.setup == nil or
-    ord(result.setup.difficulty) notin ord(Easy) .. ord(Crazy) or
-    ord(result.setup.collisions) notin ord(AllPairs) .. ord(Grid64) or
-    ord(result.setup.placement) notin ord(RandomPlacement) .. ord(ClusteredPlacement):
+  if recording.setup == nil or
+    ord(recording.setup.difficulty) notin ord(Easy) .. ord(Crazy) or
+    ord(recording.setup.collisions) notin ord(AllPairs) .. ord(Grid64) or
+    ord(recording.setup.placement) notin
+      ord(RandomPlacement) .. ord(ClusteredPlacement):
       raise newException(GalconError, "Invalid replay map settings")
-  let world = newWorld(result.setup)
-  if result.names.len notin [0, result.setup.players + 1]:
+  let world = newWorld(recording.setup)
+  if recording.names.len notin [0, recording.setup.players + 1]:
     raise newException(GalconError, "Replay names must match its player roster")
-  for name in result.names:
+  for name in recording.names:
     if name.len > 128 or validateUtf8(name) >= 0:
       raise newException(GalconError, "Invalid replay player name")
     for character in name:
@@ -97,18 +77,17 @@ proc loadRecording*(path: string): Recording =
   var
     previous = -1'i32
     senders: array[MaxPlayers + 1, bool]
-  for action in result.actions:
+  for action in recording.actions:
     if ord(action.kind) notin ord(ActionLaunch) .. ord(ActionChat) or
       action.tick < 0 or action.tick < previous or
-      action.tick >= result.hashes.len.int32 or
-      action.player < 1 or action.player > result.setup.players.int32:
+      action.tick >= recording.hashes.len.int32 or
+      action.player < 1 or action.player > recording.setup.players.int32:
         raise newException(GalconError, "Invalid replay action")
     if action.tick != previous:
       senders = default(typeof(senders))
     case action.kind
     of ActionLaunch:
       if action.count <= 0 or
-        (result.setup.legacyLaunches and action.count > MaxBodies) or
         not world.validPlanet(action.source.int) or
         not world.validPlanet(action.target.int) or
         action.source == action.target or action.text.len > 0:
@@ -130,6 +109,61 @@ proc loadRecording*(path: string): Recording =
     previous = action.tick
   if result.launches > MaxOrders or result.messages > MaxReplayChats:
     raise newException(GalconError, "Replay limits exceeded")
+
+proc validate*(recording: Recording) =
+  ## Checks the complete recording without mutating its live recorder state.
+  discard recording.recordingCounts()
+
+proc encodeRecording*(recording: Recording): string =
+  ## Encodes this version's payload after validating its ordered stream.
+  recording.validate()
+  try:
+    result = encodeReplayFile("galcon", ReplayVersion, RecordingData(
+      setup: recording.setup, actions: recording.actions,
+      hashes: recording.hashes, names: recording.names
+    ))
+  except ReplayError, ValueError, FlattyError:
+    raise newException(GalconError,
+      "Cannot encode replay: " & getCurrentExceptionMsg())
+
+proc decodeRecording*(bytes: string): Recording =
+  ## Rejects obsolete layouts before decoding and validating the current payload.
+  try:
+    let data = decodeReplayFile("galcon", ReplayVersion, bytes, RecordingData)
+    result = Recording(setup: data.setup, actions: data.actions,
+      hashes: data.hashes, names: data.names)
+    let counts = result.recordingCounts()
+    result.launches = counts.launches
+    result.messages = counts.messages
+  except ReplayError, ValueError, FlattyError, IndexDefect, RangeDefect:
+    raise newException(GalconError,
+      "Cannot decode replay: " & getCurrentExceptionMsg())
+
+proc save*(recording: Recording, path: string) =
+  ## Writes the current action stream behind Polyworld's portable file header.
+  try:
+    writeFile(path, recording.encodeRecording())
+  except IOError, OSError, GalconError:
+    raise newException(GalconError,
+      "Cannot save replay: " & getCurrentExceptionMsg())
+
+proc loadRecording*(path: string): Recording =
+  ## Bounds file reads before decoding this version's ordered replay payload.
+  try:
+    let file = open(path, fmRead)
+    defer: file.close()
+    let size = file.getFileSize()
+    if size < 0 or size > DefaultMaxReplayBytes:
+      raise newException(GalconError, "Replay exceeds the file size limit")
+    var bytes = newString(size.int)
+    if bytes.len > 0 and file.readBuffer(addr bytes[0], bytes.len) != bytes.len:
+      raise newException(GalconError, "Replay file is incomplete")
+    if not file.endOfFile():
+      raise newException(GalconError, "Replay changed while it was read")
+    result = decodeRecording(bytes)
+  except IOError, OSError, GalconError:
+    raise newException(GalconError,
+      "Cannot load replay: " & getCurrentExceptionMsg())
 
 proc clone*(recording: Recording): Recording =
   ## Makes an explicit isolated tape copy for edits or validation experiments.

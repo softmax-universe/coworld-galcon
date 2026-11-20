@@ -1,29 +1,17 @@
 import common, hullcontacts, profiles, spaces
 
 const
-  FlowReach = 24
   FlowSamplesPerCell = 12
-  FlowSpacing = ShipRadius * 3 div 2
   RouteAllowance = 48
   RouteGain = 12
-  HullPasses = 32
+  HullPasses = 48
   DeadlockTicks = TickRate * 3
   EscapeMinimumTicks = TickRate
   ProgressStep = 8
 
-proc followsRoute(world: World): bool {.inline.} =
-  ## Selects route recovery without changing any historical movement rules.
-  not world.setup.legacyMovement and not world.setup.legacyFlocking and
-    not world.setup.legacyContacts and not world.setup.legacyRouteSteering
-
-proc escapesDeadlocks(world: World): bool {.inline.} =
-  ## Keeps the escape state machine out of historical movement and replays.
-  world.setup != nil and world.followsRoute() and
-    not world.setup.legacyCrossings and not world.setup.legacyDeadlocks
-
 proc escaping(world: World, id: int): bool {.inline.} =
   ## Selects temporarily non-solid ships without changing their ownership.
-  world.bodies[id].escapeTicks > 0 and world.escapesDeadlocks()
+  world.setup != nil and world.bodies[id].escapeTicks > 0
 
 proc freeBody*(world: World): int =
   ## Finds a free slot in the original bounded flocking pool.
@@ -71,7 +59,7 @@ proc spawnClear*(world: World, x, y: Fixed): bool =
     # already leave room for the outlines before the next simulation tick.
     let
       clearance =
-        if group == ShipBody and world.setup != nil and world.followsRoute():
+        if group == ShipBody and world.setup != nil:
           FixedOne * 5 / 4
         else:
           FixedZero
@@ -172,7 +160,7 @@ proc resetProgress(body: var Body) =
 
 proc updateDeadlocks*(world: World) =
   ## Lets a ship escape after three seconds without a new destination gain.
-  if not world.escapesDeadlocks():
+  if world.setup == nil:
     return
   var
     checkReentry = false
@@ -222,204 +210,10 @@ proc indexSpawn*(world: World, slot: int) =
   world.gridNext[slot] = world.gridHeads[index]
   world.gridHeads[index] = (slot + 1).uint16
   world.spawnRadii[ShipBody] = max(world.spawnRadii[ShipBody], body.radius)
-  if not world.setup.legacyMovement and not world.setup.legacyFlocking and
-    not world.setup.legacyContacts:
-      world.neighborPressure[slot] = FixedZero
-      body.heading = arctan2(body.targetY - body.y, body.targetX - body.x)
-      if world.followsRoute():
-        world.previousHullHeading[slot] = body.heading
-        world.previousHullPressure[slot] = FixedZero
-
-proc flockHeading(world: World, id: int): Fixed =
-  ## Snapshot-only bounded local steering. Destination dominates alignment;
-  ## soft separation never turns an oncoming friendly into a solid wall.
-  let body = addr world.bodies[id]
-  let desired = arctan2(body.targetY - body.y, body.targetX - body.x)
-  var dx = cos(desired)
-  var dy = sin(desired)
-  var ax, ay, sx, sy: Fixed
-  var aligned, examined: int
-  const Columns = (Width + 15) div 16
-  const Rows = (Height + 15) div 16
-  let left = cell(int32(body.x).int64 - 24 * FixedScale, 16, Columns)
-  let right = cell(int32(body.x).int64 + 24 * FixedScale, 16, Columns)
-  let top = cell(int32(body.y).int64 - 24 * FixedScale, 16, Rows)
-  let bottom = cell(int32(body.y).int64 + 24 * FixedScale, 16, Rows)
-  block neighbors:
-    for row in top .. bottom:
-      for column in left .. right:
-        var cursor = world.gridHeads[row * Columns + column]
-        while cursor != 0:
-          let other = cursor.int - 1
-          cursor = world.gridNext[other]
-          inc examined
-          if examined > 32: break neighbors
-          if other == id or world.ships[other].owner != world.ships[id].owner:
-            continue
-          let ox = Fixed(world.spatialX[other]) - body.x
-          let oy = Fixed(world.spatialY[other]) - body.y
-          let distance = hypot(ox, oy)
-          if distance > FixedZero and distance < fixed(24):
-            # Only actually moving, similarly directed neighbors align.
-            let vx = world.neighborVX[other]
-            let vy = world.neighborVY[other]
-            if vx * dx + vy * dy > FixedZero:
-              ax += vx
-              ay += vy
-              inc aligned
-            if distance < fixed(ShipRadius * 2):
-              let strength = (fixed(ShipRadius * 2) - distance) / fixed(ShipRadius * 2)
-              sx -= ox / distance * strength
-              sy -= oy / distance * strength
-  if aligned > 0:
-    dx += ax / aligned.int32 / 3
-    dy += ay / aligned.int32 / 3
-  let separation = hypot(sx, sy)
-  if separation > FixedZero:
-    dx += sx / max(FixedOne, separation) / 3
-    dy += sy / max(FixedOne, separation) / 3
-  # Slide around non-target planets rather than repeatedly driving into them.
-  # Planet count is independently capped at 128.
-  for p in world.planets:
-    if p.body == body.target: continue
-    let ox = p.x - body.x
-    let oy = p.y - body.y
-    let reach = fixed((p.radius + ShipRadius + 10).int32)
-    if abs(ox) >= reach or abs(oy) >= reach: continue
-    let distance = hypot(ox, oy)
-    if distance > FixedZero and distance < reach and ox * dx + oy * dy > FixedZero:
-      let side = if (id and 1) == 0: -1'i32 else: 1'i32
-      let strength = (reach - distance) / fixed(10)
-      dx += (oy / distance * side - ox / distance) * strength
-      dy += (-ox / distance * side - oy / distance) * strength
-  arctan2(dy, dx)
-
-proc flowHeading(world: World, id: int): Fixed =
-  ## Preserves the historical v16/v17 flow behavior for recorded matches.
-  let
-    body = addr world.bodies[id]
-    desired = arctan2(body.targetY - body.y, body.targetX - body.x)
-    goalX = cos(desired)
-    goalY = sin(desired)
-    reach = if world.setup.legacyContacts: FlowReach else: 36
-    spacing = if world.setup.legacyContacts: FlowSpacing else: 14
-    crowding = if world.setup.legacyContacts: ShipRadius * 2 else: 14
-    left = cell(int32(body.x).int64 - reach * FixedScale, 16,
-      (Width + 15) div 16)
-    right = cell(int32(body.x).int64 + reach * FixedScale, 16,
-      (Width + 15) div 16)
-    top = cell(int32(body.y).int64 - reach * FixedScale, 16,
-      (Height + 15) div 16)
-    bottom = cell(int32(body.y).int64 + reach * FixedScale, 16,
-      (Height + 15) div 16)
-  var
-    ax, ay, alignment, sx, sy, passing, pressure: Fixed
-    dx = goalX
-    dy = goalY
-  for row in top .. bottom:
-    for column in left .. right:
-      var
-        cursor = world.gridHeads[row * ((Width + 15) div 16) + column]
-        examined = 0
-      while cursor != 0 and examined < FlowSamplesPerCell:
-        let other = cursor.int - 1
-        cursor = world.gridNext[other]
-        inc examined
-        if other == id or world.ships[other].owner != world.ships[id].owner:
-          continue
-        var
-          ox = Fixed(world.spatialX[other]) - body.x
-          oy = Fixed(world.spatialY[other]) - body.y
-        if lengthSquared(ox, oy) >=
-          reach.int64 * reach * FixedScale * FixedScale:
-            continue
-        var distance = hypot(ox, oy)
-        let
-          speed = world.bodies[other].speed
-          weight = (fixed(reach.int32) - distance) / fixed(reach.int32)
-        if speed > FixedZero:
-          let
-            vx = world.neighborVX[other] / speed
-            vy = world.neighborVY[other] / speed
-            agreement = clamp(vx * goalX + vy * goalY, -FixedOne, FixedOne)
-          # Project onto the neighbor's axis. Opposite streams align without
-          # cancelling or reversing, and perpendicular influence fades smoothly.
-          ax += vx * agreement * weight
-          ay += vy * agreement * weight
-          alignment += abs(agreement) * weight
-          let
-            forward = ox * goalX + oy * goalY
-            lateral = abs(oy * goalX - ox * goalY)
-          if forward > FixedZero and lateral < fixed(spacing.int32) and
-            agreement < FixedOne / 2 and
-            ox * (goalX * body.speed - world.neighborVX[other]) +
-              oy * (goalY * body.speed - world.neighborVY[other]) > FixedZero:
-              # Both streams keep right in their own direction of travel.
-              passing = max(passing, weight *
-                (FixedOne - lateral / fixed(spacing.int32)))
-        if distance < fixed(crowding.int32):
-          pressure += (fixed(crowding.int32) - distance) /
-            fixed(crowding.int32)
-        if distance < fixed(spacing.int32):
-          if distance == FixedZero:
-            # Antisymmetric tie breaks let coincident ships fan out safely.
-            var seed = (min(id, other) + 1).uint32 * 0x9e3779b9'u32 xor
-              (max(id, other) + 1).uint32 * 0x85ebca6b'u32
-            seed = (seed xor (seed shr 16)) * 0x7feb352d'u32
-            seed = seed xor (seed shr 15)
-            ox = Fixed(int32(seed and 0xffff'u32) - 32768)
-            oy = Fixed(int32(seed shr 16) - 32768)
-            if id > other:
-              ox = -ox
-              oy = -oy
-            distance = hypot(ox, oy)
-            if distance == FixedZero:
-              ox = if id < other: FixedOne else: -FixedOne
-              distance = FixedOne
-          let strength = (fixed(spacing.int32) - distance) / fixed(spacing.int32)
-          sx -= ox / distance * strength
-          sy -= oy / distance * strength
-  world.neighborPressure[id] = min(FixedOne, pressure / 3)
-  if alignment > FixedZero:
-    dx += ax / max(FixedOne, alignment) * 2 / 3
-    dy += ay / max(FixedOne, alignment) * 2 / 3
-  let separation = max(FixedOne, hypot(sx, sy))
-  if world.setup.legacyContacts:
-    dx += sx / separation / 4 - goalY * passing / 3
-    dy += sy / separation / 4 + goalX * passing / 3
-  else:
-    dx += sx / separation / 4 - goalY * passing
-    dy += sy / separation / 4 + goalX * passing
-  # Neighboring ships take the nearer side of an obstacle together instead of
-  # splitting by pool ID. A centered approach consistently passes to the right.
-  for planet in world.planets:
-    if planet.body == body.target:
-      continue
-    let
-      ox = planet.x - body.x
-      oy = planet.y - body.y
-      reach = fixed((planet.radius + ShipRadius + 14).int32)
-    if abs(ox) >= reach or abs(oy) >= reach:
-      continue
-    let distance = hypot(ox, oy)
-    if distance > FixedZero and distance < reach and
-      ox * goalX + oy * goalY > FixedZero:
-        let
-          side = if goalX * oy - goalY * ox > FixedZero: -1'i32 else: 1'i32
-          strength = (reach - distance) / fixed(14)
-        dx += (-oy / distance * side - ox / distance) * strength
-        dy += (ox / distance * side - oy / distance) * strength
-  let
-    previousX = world.neighborVX[id]
-    previousY = world.neighborVY[id]
-    previousSpeed = hypot(previousX, previousY)
-    nextSpeed = hypot(dx, dy)
-  if previousSpeed > FixedZero and nextSpeed > FixedZero and
-    previousX * goalX + previousY * goalY > FixedZero:
-      # Smooth changes in the sampled neighborhood without adding mutable state.
-      dx = dx / nextSpeed + previousX / previousSpeed * 2
-      dy = dy / nextSpeed + previousY / previousSpeed * 2
-  arctan2(dy, dx)
+  world.neighborPressure[slot] = FixedZero
+  body.heading = arctan2(body.targetY - body.y, body.targetX - body.x)
+  world.previousHullHeading[slot] = body.heading
+  world.previousHullPressure[slot] = FixedZero
 
 proc routeHeading(world: World, id: int): Fixed =
   ## Adapts LvD's bounded lateral traffic bias around each ship's own route.
@@ -545,9 +339,8 @@ proc collide(world: World, first, second: int) {.inline.} =
     a = addr world.bodies[first]
     b = addr world.bodies[second]
     clearance =
-      if world.setup != nil and not world.setup.legacyMovement and
-        not world.setup.legacyFlocking and not world.setup.legacyContacts and
-        a.kind != b.kind and (a.speed > FixedZero or b.speed > FixedZero) and
+      if world.setup != nil and a.kind != b.kind and
+        (a.speed > FixedZero or b.speed > FixedZero) and
         a.target != second and b.target != first:
           FixedOne * 2
       else:
@@ -560,7 +353,7 @@ proc collide(world: World, first, second: int) {.inline.} =
   if a.kind == ShipBody and b.kind == ShipBody and
     (world.escaping(first) or world.escaping(second)):
       return
-  if not world.setup.legacyMovement and a.kind == ShipBody and
+  if a.kind == ShipBody and
     b.kind == ShipBody and a.speed > FixedZero and b.speed > FixedZero and
     world.ships[first].owner == world.ships[second].owner:
       return # Soft steering handles friends; hard correction undoes progress.
@@ -583,7 +376,7 @@ proc collide(world: World, first, second: int) {.inline.} =
   if distance == FixedZero:
     distance = FixedOne
     dx = FixedOne
-  if not world.setup.legacyMovement and a.kind != b.kind and
+  if a.kind != b.kind and
     (if a.kind == ShipBody: a.speed else: b.speed) > FixedZero:
     # Planets are immovable in gameplay. Round outward to avoid residual Q16
     # overlap; never let ship pressure move the obstacle or undo another ship.
@@ -616,9 +409,6 @@ proc separateHulls(world: World, count: int) =
     Columns = (Width + 15) div 16
     Rows = (Height + 15) div 16
     Reach = 14 * FixedScale
-  let
-    routeFlow = world.followsRoute()
-    triangleFlow = routeFlow and not world.setup.legacyCrossings
   var planetReach = fixed(ShipRadius + 2)
   var dirty, changed, awake: array[MaxBodies, bool]
   var hullSamples: array[MaxBodies, HullSamples]
@@ -634,33 +424,29 @@ proc separateHulls(world: World, count: int) =
     if body.kind != ShipBody or body.speed <= FixedZero or world.escaping(id):
       continue
     dirty[id] = true
-    if triangleFlow:
-      # Gradually reserve the old circular space before reaching a planet.
-      # Triangle-only projections can otherwise wedge ships against its edge.
-      for planet in world.planets:
-        let reach = fixed((planet.radius + 44).int32)
-        if lengthSquared(body.x - planet.x, body.y - planet.y) <
-          int32(reach).int64 * int32(reach):
-            planetGuard[id] = max(planetGuard[id], min(FixedOne,
-              (reach - hypot(body.x - planet.x, body.y - planet.y)) / 20))
-        if lengthSquared(body.previousX - planet.x,
-          body.previousY - planet.y) < int32(reach).int64 * int32(reach):
-            oldPlanetGuard[id] = max(oldPlanetGuard[id], min(FixedOne,
-              (reach - hypot(body.previousX - planet.x,
-                body.previousY - planet.y)) / 20))
-      nearPlanets[id] = max(planetGuard[id], oldPlanetGuard[id]) > FixedZero
-      let turn = arctan2(sin(body.heading - world.previousHullHeading[id]),
-        cos(body.heading - world.previousHullHeading[id]))
-      for sample in 1 .. 4:
-        hullSamples[id][sample] = world.makeHullSample(id, sample, turn)
+    # Gradually reserve circular clearance before reaching a planet.
+    # Triangle-only projections can otherwise wedge ships against its edge.
+    for planet in world.planets:
+      let reach = fixed((planet.radius + 44).int32)
+      if lengthSquared(body.x - planet.x, body.y - planet.y) <
+        int32(reach).int64 * int32(reach):
+          planetGuard[id] = max(planetGuard[id], min(FixedOne,
+            (reach - hypot(body.x - planet.x, body.y - planet.y)) / 20))
+      if lengthSquared(body.previousX - planet.x,
+        body.previousY - planet.y) < int32(reach).int64 * int32(reach):
+          oldPlanetGuard[id] = max(oldPlanetGuard[id], min(FixedOne,
+            (reach - hypot(body.previousX - planet.x,
+              body.previousY - planet.y)) / 20))
+    nearPlanets[id] = max(planetGuard[id], oldPlanetGuard[id]) > FixedZero
+    let turn = arctan2(sin(body.heading - world.previousHullHeading[id]),
+      cos(body.heading - world.previousHullHeading[id]))
+    for sample in 1 .. 4:
+      hullSamples[id][sample] = world.makeHullSample(id, sample, turn)
     let
       forward = FixedOne - world.neighborPressure[id] / 10
       width = FixedOne - world.neighborPressure[id] / 4
       center = (forward * forward * 3 - width * width) / (forward * 2)
-      margin =
-        if triangleFlow: FixedOne * 9 / 8
-        elif routeFlow: FixedOne
-        else: FixedOne * 5 / 4
+      margin = FixedOne * 9 / 8
     # This circle encloses all three compressed vertices. The extra radius
     # includes the half-pixel outline and room for bounded solver residuals.
     world.hullDX[id] = cos(body.heading)
@@ -679,11 +465,7 @@ proc separateHulls(world: World, count: int) =
     world.previousHullRadius[id] =
       (oldForward * oldForward * 9 + oldWidth * oldWidth) /
         (oldForward * 2) + margin
-  let iterations =
-    if world.escapesDeadlocks(): 48
-    elif routeFlow: HullPasses
-    else: 48
-  for iteration in 0 ..< iterations:
+  for iteration in 0 ..< HullPasses:
     changed = default(typeof(changed))
     var sweepX, sweepY: array[MaxPlayers + 1, int64]
     for owner in 0 .. MaxPlayers:
@@ -693,7 +475,7 @@ proc separateHulls(world: World, count: int) =
       let id = world.activeBodies[i].int
       world.spatialX[id] = int32(world.bodies[id].x + world.hullX[id])
       world.spatialY[id] = int32(world.bodies[id].y + world.hullY[id])
-      if routeFlow and world.bodies[id].kind == ShipBody and
+      if world.bodies[id].kind == ShipBody and
         not world.escaping(id):
           # Bounds cover solid motion, including contact corrections.
           let owner = world.ships[id].owner
@@ -729,13 +511,9 @@ proc separateHulls(world: World, count: int) =
           continue
         let
           startX =
-            if routeFlow:
-              int32(world.bodies[id].previousX + world.previousHullX[id]).int64
-            else: world.spatialX[id].int64
+            int32(world.bodies[id].previousX + world.previousHullX[id]).int64
           startY =
-            if routeFlow:
-              int32(world.bodies[id].previousY + world.previousHullY[id]).int64
-            else: world.spatialY[id].int64
+            int32(world.bodies[id].previousY + world.previousHullY[id]).int64
           left = cell(min(world.spatialX[id].int64, startX) -
             sweepX[world.ships[id].owner], 16, Columns)
           right = cell(max(world.spatialX[id].int64, startX) +
@@ -761,14 +539,8 @@ proc separateHulls(world: World, count: int) =
         body.speed <= FixedZero or body.hit or world.escaping(id):
         continue
       let
-        startX =
-          if routeFlow:
-            int32(body.previousX + world.previousHullX[id]).int64
-          else: world.spatialX[id].int64
-        startY =
-          if routeFlow:
-            int32(body.previousY + world.previousHullY[id]).int64
-          else: world.spatialY[id].int64
+        startX = int32(body.previousX + world.previousHullX[id]).int64
+        startY = int32(body.previousY + world.previousHullY[id]).int64
         left = cell(min(world.spatialX[id].int64, startX) -
           sweepX[world.ships[id].owner], 16, Columns)
         right = cell(max(world.spatialX[id].int64, startX) +
@@ -804,28 +576,22 @@ proc separateHulls(world: World, count: int) =
             if (min(dx, oldX) > sweepRadius or max(dx, oldX) < -sweepRadius) or
               (min(dy, oldY) > sweepRadius or max(dy, oldY) < -sweepRadius):
                 continue
-            if triangleFlow:
-              # Reject the corners of the swept bounding box before testing
-              # four sets of triangle axes. The extra slack covers pose bends.
-              let
-                closestX = max(FixedZero, max(min(dx, oldX), -max(dx, oldX)))
-                closestY = max(FixedZero, max(min(dy, oldY), -max(dy, oldY)))
-                bound = sweepRadius + FixedOne / 8
-              if lengthSquared(closestX, closestY) >
-                int32(bound).int64 * int32(bound):
-                  continue
+            # Reject the corners of the swept bounding box before testing
+            # four sets of triangle axes. The extra slack covers pose bends.
+            let
+              closestX = max(FixedZero, max(min(dx, oldX), -max(dx, oldX)))
+              closestY = max(FixedZero, max(min(dy, oldY), -max(dy, oldY)))
+              bound = sweepRadius + FixedOne / 8
+            if lengthSquared(closestX, closestY) >
+              int32(bound).int64 * int32(bound):
+                continue
             var
               distance = FixedZero
               overlap = FixedZero
-            if not triangleFlow or nearPlanets[id] or nearPlanets[other]:
+            if nearPlanets[id] or nearPlanets[other]:
               let
-                guard =
-                  if triangleFlow: max(planetGuard[id], planetGuard[other])
-                  else: FixedOne
-                oldGuard =
-                  if triangleFlow:
-                    max(oldPlanetGuard[id], oldPlanetGuard[other])
-                  else: FixedOne
+                guard = max(planetGuard[id], planetGuard[other])
+                oldGuard = max(oldPlanetGuard[id], oldPlanetGuard[other])
                 contactRadius = radius * guard
                 contactSweepRadius = sweepRadius * max(guard, oldGuard)
               if lengthSquared(dx, dy) <
@@ -857,24 +623,23 @@ proc separateHulls(world: World, count: int) =
                         dy = sampleY
                         distance = sampleDistance
                         overlap = sweepOverlap
-            if triangleFlow:
-              for sample in 1 .. 4:
-                let
-                  blend = FixedOne * sample.int32 / 4
-                  pairX = neighbor.previousX - body.previousX +
-                    ((neighbor.x - neighbor.previousX) -
-                      (body.x - body.previousX)) * blend
-                  pairY = neighbor.previousY - body.previousY +
-                    ((neighbor.y - neighbor.previousY) -
-                      (body.y - body.previousY)) * blend
-                  contact = hullPenetration(hullSamples[id][sample],
-                    hullSamples[other][sample], pairX, pairY)
-                  amount = contact.amount / blend
-                if amount > overlap:
-                  overlap = amount
-                  dx = contact.nx
-                  dy = contact.ny
-                  distance = FixedOne
+            for sample in 1 .. 4:
+              let
+                blend = FixedOne * sample.int32 / 4
+                pairX = neighbor.previousX - body.previousX +
+                  ((neighbor.x - neighbor.previousX) -
+                    (body.x - body.previousX)) * blend
+                pairY = neighbor.previousY - body.previousY +
+                  ((neighbor.y - neighbor.previousY) -
+                    (body.y - body.previousY)) * blend
+                contact = hullPenetration(hullSamples[id][sample],
+                  hullSamples[other][sample], pairX, pairY)
+                amount = contact.amount / blend
+              if amount > overlap:
+                overlap = amount
+                dx = contact.nx
+                dy = contact.ny
+                distance = FixedOne
             if overlap <= FixedZero:
               continue
             if distance == FixedZero:
@@ -888,25 +653,18 @@ proc separateHulls(world: World, count: int) =
                 (world.hullDY[id] - world.hullDY[other]) * ny
               # Repeated sideways pushes add energy, so finish radially.
               slip =
-                if closing <= FixedOne / 2: FixedZero
-                elif routeFlow:
-                  if iteration < 4 and
-                    world.neighborVX[id] * world.neighborVX[other] +
-                      world.neighborVY[id] * world.neighborVY[other] <
-                      -FixedOne / 4:
-                        -FixedOne / 2
-                  else:
-                    FixedZero
-                else: FixedOne
+                if closing > FixedOne / 2 and iteration < 4 and
+                  world.neighborVX[id] * world.neighborVX[other] +
+                    world.neighborVY[id] * world.neighborVY[other] <
+                    -FixedOne / 4:
+                      -FixedOne / 2
+                else:
+                  FixedZero
               push = overlap / 2 + Fixed(2)
               pushX = (nx + ny * slip) * push
               pushY = (ny - nx * slip) * push
-              share =
-                if routeFlow:
-                  world.routePriority[other] * 2 /
-                    (world.routePriority[id] + world.routePriority[other])
-                else:
-                  FixedOne
+              share = world.routePriority[other] * 2 /
+                (world.routePriority[id] + world.routePriority[other])
             maximumOverlap = max(maximumOverlap, overlap)
             body.x -= pushX * share
             body.y -= pushY * share
@@ -967,8 +725,7 @@ proc separateHulls(world: World, count: int) =
 
 proc moveBodies*(world: World, kind = AllPairs) {.measure.} =
   ## Moves ships and resolves candidates from a deterministic tick snapshot.
-  let routeFlow = world.setup != nil and world.followsRoute()
-  if world.escapesDeadlocks():
+  if world.setup != nil:
     for body in world.bodies.mitems:
       if body.active and body.kind == ShipBody and not body.progressReady:
         body.resetProgress()
@@ -977,7 +734,7 @@ proc moveBodies*(world: World, kind = AllPairs) {.measure.} =
     activeCount = 0
     maximumRadii: array[BodyKind, int32]
     maximumIds: array[BodyKind, int] = [-1, -1]
-  if world.setup != nil and not world.setup.legacyMovement:
+  if world.setup != nil:
     world.prepareSpawns()
     for i in 0 ..< MaxBodies:
       let b = addr world.bodies[i]
@@ -985,7 +742,7 @@ proc moveBodies*(world: World, kind = AllPairs) {.measure.} =
       world.previousHullPressure[i] = world.neighborPressure[i]
       world.neighborVX[i] = clamp(b.x - b.previousX, -b.speed, b.speed)
       world.neighborVY[i] = clamp(b.y - b.previousY, -b.speed, b.speed)
-      if routeFlow and b.active and b.kind == ShipBody:
+      if b.active and b.kind == ShipBody:
         if not b.routeReady:
           b.routeX = b.x
           b.routeY = b.y
@@ -999,10 +756,7 @@ proc moveBodies*(world: World, kind = AllPairs) {.measure.} =
       world.neighborPressure[i] = FixedZero
     for i in 0 ..< MaxBodies:
       if world.bodies[i].active and world.bodies[i].kind == ShipBody:
-        world.neighborHeading[i] =
-          if world.setup.legacyFlocking: world.flockHeading(i)
-          elif routeFlow: world.routeHeading(i)
-          else: world.flowHeading(i)
+        world.neighborHeading[i] = world.routeHeading(i)
     world.spawnGridReady = false
   profileBlock "movement":
     for i in 0 ..< MaxBodies:
@@ -1015,9 +769,11 @@ proc moveBodies*(world: World, kind = AllPairs) {.measure.} =
         body.previousX = body.x
         body.previousY = body.y
         let travelHeading =
-          if world.setup == nil or world.setup.legacyMovement: arctan2(body.targetY - body.y, body.targetX - body.x)
-          else: world.neighborHeading[i]
-        if routeFlow:
+          if world.setup == nil:
+            arctan2(body.targetY - body.y, body.targetX - body.x)
+          else:
+            world.neighborHeading[i]
+        if world.setup != nil:
           let turn = arctan2(sin(travelHeading - body.heading),
             cos(travelHeading - body.heading))
           body.heading += clamp(turn / 6, -FixedOne / 20, FixedOne / 20)
@@ -1099,7 +855,6 @@ proc moveBodies*(world: World, kind = AllPairs) {.measure.} =
                 if other > id:
                   world.collide(id, other)
                 cursor = world.gridNext[other]
-  if world.setup != nil and not world.setup.legacyMovement and
-    not world.setup.legacyFlocking and not world.setup.legacyContacts:
-      world.separateHulls(activeCount)
+  if world.setup != nil:
+    world.separateHulls(activeCount)
   world.updateDeadlocks()

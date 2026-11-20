@@ -149,7 +149,7 @@ block:
   doAssert world.launch(1, source, source, 100) == 0
   doAssert world.launch(1, source, target, 1) == 1
   doAssert world.planets[source].shipCount == 99
-  world.advance() # Version 15 accepts now and emits once at the tick boundary.
+  world.advance() # Accepted ships emit once at the tick boundary.
   doAssert world.planets[target].incoming[1] == 1
   var slot = -1
   for i, body in world.bodies:
@@ -294,7 +294,6 @@ echo "Independent BASIC matches and replay reproduce every fixed-state hash"
 block:
   let options = parseOptions(@["--headless", "--seed", "77", "--ticks", "1800"])
   options.setup.collisions = AllPairs
-  options.setup.legacyMovement = true # Preserve the frozen historical golden.
   options.setup.placement = ClassicPlacement
   options.setup.enemyShipsPassThrough = false
   options.setup.neutralsDontProduce = false
@@ -329,7 +328,7 @@ block:
     loaded.replayTick(playback, cursor)
   doAssert playback.fingerprint() == a.world.fingerprint()
   echo "Golden deterministic state: ", a.world.fingerprint()
-  doAssert a.world.fingerprint() == 9960303572208390231'u64
+  doAssert a.world.fingerprint() == 11511613221366982100'u64
   writeFile(Root / "build" / "deterministic.hash", $a.world.fingerprint())
   let damaged = loaded.clone()
   damaged.hashes[0] = damaged.hashes[0] xor 1
@@ -363,65 +362,6 @@ when defined(nimTypeNames):
     doAssert session.world.captures > 0
     echo "Allocation-free ticks: ", session.world.tick - 2048
 
-echo "Legacy launches retain immediate-spawn replay semantics"
-block:
-  let
-    world = duel()
-    source = world.ownerPlanet(1)
-    target = world.ownerPlanet(2)
-  for planet in world.planets:
-    planet.production = 0
-  world.planets[source].ships = stock(10000)
-  world.setup.legacyLaunches = true
-  let
-    playback = world.clone()
-    sent = world.launch(1, source, target, 10000)
-  doAssert sent > 1 and sent < 100
-  doAssert world.planets[source].ships == stock(10000 - sent)
-  doAssert world.planets[target].incoming[1] == sent
-  doAssert world.activeShips == sent
-  doAssert playback.launch(1, source, target, sent) == sent
-  doAssert world.fingerprint() == playback.fingerprint()
-  for i, body in world.bodies:
-    if not body.active or body.kind != ShipBody:
-      continue
-    doAssert body.x >= fixed(ShipRadius)
-    doAssert body.x <= fixed(Width - ShipRadius)
-    doAssert body.y >= fixed(ShipRadius)
-    doAssert body.y <= fixed(Height - ShipRadius)
-    for j, other in world.bodies:
-      if i == j or not other.active:
-        continue
-      let distance = int32(body.radius + other.radius).int64
-      doAssert lengthSquared(body.x - other.x, body.y - other.y) >=
-        distance * distance
-  let blocked = world.fingerprint()
-  doAssert world.launch(1, source, target, 10000) == 0
-  doAssert world.launch(1, source, target, 1) == 0
-  doAssert world.fingerprint() == blocked
-  var resumed = false
-  for tick in 0 ..< 64:
-    world.advance()
-    playback.advance()
-    let launched = world.launch(1, source, target, 10000)
-    if launched > 0:
-      doAssert playback.launch(1, source, target, launched) == launched
-      doAssert world.fingerprint() == playback.fingerprint()
-      resumed = true
-      break
-  doAssert resumed, "Ships must launch again as the surrounding fleet moves."
-block:
-  let
-    world = duel()
-    source = world.ownerPlanet(1)
-    target = world.ownerPlanet(2)
-    body = world.planets[source].body
-  world.setup.legacyLaunches = true
-  world.bodies[body].radius += fixed(ShipRadius * 3)
-  let blocked = world.fingerprint()
-  doAssert world.launch(1, source, target, 100) == 0
-  doAssert world.fingerprint() == blocked
-
 echo "Spatial spawn queries match a full scan for ships and planets"
 block:
   let world = newWorld(configuredSetup(9, Easy, 16, 69))
@@ -442,34 +382,6 @@ block:
             clear = false
             break
       doAssert world.spawnClear(fixed(x.int32), fixed(y.int32)) == clear
-
-echo "Full ship pools preserve replay state after partial or blocked launches"
-block:
-  let world = duel()
-  let source = world.ownerPlanet(1)
-  world.setup.legacyLaunches = true
-  world.planets[source].ships = stock(MaxBodies + 100)
-  for i in 0 ..< MaxBodies - 2:
-    if world.bodies[i].active:
-      continue
-    world.bodies[i] = Body(
-      active: true,
-      kind: ShipBody,
-      x: fixed(Width - ShipRadius),
-      y: fixed(Height - ShipRadius),
-      radius: fixed(ShipRadius)
-    )
-    world.ships[i] = Ship(owner: 1, target: world.ownerPlanet(2))
-    inc world.activeShips
-  let playback = world.clone()
-  doAssert world.launch(1, source, world.ownerPlanet(2), MaxBodies + 100) == 2
-  doAssert playback.launch(1, source, playback.ownerPlanet(2), 2) == 2
-  doAssert world.fingerprint() == playback.fingerprint()
-  doAssert world.activeShips == MaxBodies - world.planets.len
-  let full = world.fingerprint()
-  doAssert world.freeBody() == -1
-  doAssert world.launch(1, source, world.ownerPlanet(2), 50) == 0
-  doAssert world.fingerprint() == full
 
 echo "Live rewind preserves BASIC variables, RNG, and pending human commands"
 block:
@@ -587,7 +499,7 @@ block:
   live.seek(9000)
   doAssert live.world.tick == 9000
 block:
-  let path = Root / "build" / "legacy.replay"
+  let path = Root / "build" / "obsolete.replay"
   saveReplayFile(path, "galcon", 1, "unsupported")
   var rejected = false
   try:
@@ -632,6 +544,9 @@ import test_flow_replays as _
 import test_lobby_relay as _
 when not defined(headless):
   import test_audio_launch as _
+  import test_replay_library as _
+  import test_recording_library as _
+  import test_replay_frontend as _
   import test_auto_seats
   testAutoSeats()
   import test_lobby_frontend as _
