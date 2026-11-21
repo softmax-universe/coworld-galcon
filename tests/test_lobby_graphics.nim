@@ -2,6 +2,7 @@ import std/[importutils, times, os, unicode, tables]
 import windy/internal
 import opengl, windy, silky, pixie, vmath, jsony
 import galcon/[frontends, themes, multiplayer, common, options]
+import nativeinputs
 privateAccess(Frontend)
 privateAccess(Window)
 
@@ -47,12 +48,17 @@ front.connection.client.snapshot = RoomMessage(kind: RoomState, room: "test",
     Seat(owner: 2, name: "Truce Bot", kind: BotSeat)])
 front.preferences.name = "Native host"
 front.syncLobby()
+proc drawFrame() =
+  ## Delivers injected input through the current backend before drawing the UI.
+  window.syncTestInput()
+  front.draw(sk, window)
+
 proc expectReadyPip(ready: bool, label: string, disabled = false) =
   ## Reads the actual Ready button, not the roster or a presentation helper.
   window.state.perFrame = PerFrame()
   window.state.mousePos = ivec2(750, 880)
   let sent = front.connection.client.outgoing.len
-  front.draw(sk, window)
+  drawFrame()
   doAssert front.connection.client.outgoing.len == sent,
     "Drawing readiness must never submit Ready or alter retained intent"
   let image = newImage(1514, 970)
@@ -89,31 +95,31 @@ front.pendingConfig = "pending"
 expectReadyPip(false, "disabled-sync", disabled = true)
 front.pendingConfig = ""
 front.ui.selectedSeat = 1
-front.draw(sk, window)
+drawFrame()
 doAssert front.ui.selectedSeatBot == LobbyBotPolicies[TruceBot].name,
   "A fresh slot picker must keep Truce as its default bot"
 for bot in LobbyBot:
   front.ui.selectedSeatBot = LobbyBotPolicies[bot].name
-  front.draw(sk, window)
+  drawFrame()
   doAssert front.ui.selectedSeatBot == LobbyBotPolicies[bot].name,
     "Reopening the slot picker must preserve a valid bot selection"
 front.ui.selectedSeat = -1
 front.connection.client.outgoing.setLen(0)
 window.state.mousePos = ivec2(120, 360)
 window.handleButtonPress(MouseRight)
-front.draw(sk, window)
+drawFrame()
 doAssert front.contextSeat == 2, "Actual right-click must open the target player's menu"
 window.state.perFrame = PerFrame()
 window.handleButtonRelease(MouseRight)
-front.draw(sk, window)
+drawFrame()
 window.state.perFrame = PerFrame()
 # The popup is anchored at (136, 344); its action is at (148, 388).
 window.state.mousePos = ivec2(220, 412)
 window.handleButtonPress(MouseLeft)
-front.draw(sk, window)
+drawFrame()
 window.state.perFrame = PerFrame()
 window.handleButtonRelease(MouseLeft)
-front.draw(sk, window)
+drawFrame()
 doAssert front.contextSeat == -1, front.error
 doAssert front.connection.client.outgoing.len == 1
 let kick = decode(front.connection.client.outgoing[0])
@@ -123,10 +129,10 @@ proc click(point: IVec2) =
   window.state.perFrame = PerFrame()
   window.state.mousePos = point
   window.handleButtonPress(MouseLeft)
-  front.draw(sk, window)
+  drawFrame()
   window.state.perFrame = PerFrame()
   window.handleButtonRelease(MouseLeft)
-  front.draw(sk, window)
+  drawFrame()
 click(ivec2(1440, 464))
 doAssert front.synchronizing()
 doAssert decode(front.connection.client.outgoing[^1]).kind == ResizeRoom
@@ -150,7 +156,7 @@ front.contextAt = vec2(136, 344)
 window.state.perFrame = PerFrame()
 window.state.mousePos = ivec2(220, 412)
 window.handleButtonRelease(MouseLeft)
-front.draw(sk, window)
+drawFrame()
 doAssert front.connection.client.outgoing.len == 0, "Release without fresh popup press must not act"
 click(ivec2(1440, 464))
 doAssert front.contextSeat == -1 and front.connection.client.outgoing.len == 0,
@@ -193,7 +199,7 @@ click(ivec2(560, 450))
 let typedName = "treeform :) 空 白 \"q\": (host)"
 for rune in typedName.runes:
   window.runeEvent(rune)
-  front.draw(sk, window)
+  drawFrame()
   window.state.perFrame = PerFrame()
 doAssert front.playerDraft == typedName, "Actual rune input must preserve the literal name"
 front.pump()

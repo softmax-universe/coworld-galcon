@@ -2,6 +2,7 @@ include ../src/galcon/graphics
 import std/[importutils, tempfiles]
 import windy/internal
 import galcon/[replaylibraries, replays]
+import nativeinputs
 
 privateAccess(Window)
 
@@ -25,6 +26,7 @@ proc replayMenuInput(view: View, point = vec2(-100),
     view.window.state.buttonDown.incl MouseLeft
   if released:
     view.window.state.perFrame.buttonReleased.incl MouseLeft
+  view.window.syncTestInput()
   view.drawMatchMenu()
 
 proc clickReplaySave(view: View) =
@@ -137,6 +139,7 @@ proc testReplaySaveGraphics() =
   view.transport = Transport(player: initPlayer(false, 1, true))
   window.state.perFrame = PerFrame()
   window.state.buttonDown = {}
+  window.syncTestInput()
   view.frame()
   doAssert view.screen == FrontScreen and front.browsingReplays
   doAssert view.session == nil

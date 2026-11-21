@@ -2,7 +2,8 @@ import
   std/[importutils, os, times],
   opengl, pixie, silky, vmath, windy/internal,
   polyworld/[chrome, replaylibraries],
-  galcon/[common, rasters, replaymenus, replays, textures, themes]
+  galcon/[common, rasters, replaymenus, replays, textures, themes],
+  nativeinputs
 
 privateAccess(Window)
 
@@ -75,6 +76,7 @@ proc verifyReplayMenu(size: IVec2, screenshot: string, zoom = 0) =
       window.state.perFrame.buttonReleased.incl MouseLeft
     if key != ButtonUnknown:
       window.state.perFrame.buttonPressed.incl key
+    window.syncTestInput()
 
   proc render(point = vec2(-100), pressed = false, released = false,
       key = ButtonUnknown): ReplayBrowserResult =
