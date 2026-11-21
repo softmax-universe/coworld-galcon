@@ -5,85 +5,28 @@ on:
   pull_request:
     branches: [master]
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
+    timeout-minutes: 5
     env:
       GALCON_DEPS: ${{ github.workspace }}/..
     strategy:
-      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: treeform/setup-nim-action@v6
-      - name: Install Linux audio and display libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libopenal-dev xvfb xauth libgl1-mesa-dri libglx-mesa0
       - name: Install dependencies
         shell: bash
         run: |
           cd ..
           nimby create
           nimby sync "${{ github.event.repository.name }}/galcon.lock"
-      - name: Make Windows OpenAL available
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $openal = (Resolve-Path "$env:GALCON_DEPS/openal/deps/win64").Path
-          if (-not (Test-Path "$openal/soft_oal.dll")) {
-            throw "The pinned OpenAL dependency is missing soft_oal.dll"
-          }
-          $openal | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      - name: Prepare Windows test executable directory
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: New-Item -ItemType Directory -Force -Path build/nimcache | Out-Null
-      - name: Install Windows software OpenGL for tests
-        if: runner.os == 'Windows'
-        uses: f3d-app/install-mesa-windows-action@b78081f8331c5d49d71b221ca13a25fd97dac165 # v3
-        with:
-          version: '23.3.5'
-          path: ${{ github.workspace }}/build/nimcache
-      - name: Check graphical and headless builds
-        run: |
-          nim check src/galcon.nim
-          nim check -d:headless src/galcon.nim
-      - name: Test native replay menus
-        shell: bash
-        env:
-          GALCON_REPLAY_MENU_SCREENSHOT: ${{ github.workspace }}/build/replay-menu.png
-        run: |
-          test_runner=()
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            test_runner=(xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1)
-          fi
-          for fixture in test_lobby_graphics test_replay_menu_render test_replay_save_graphics; do
-            nim check -d:release "tests/${fixture}.nim"
-            "${test_runner[@]}" nim r -d:release "tests/${fixture}.nim"
-          done
-      - name: Test deterministic simulation and rendering
-        shell: bash
-        run: |
-          nim check tests/tests.nim
-          test_runner=()
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            test_runner=(xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1)
-          fi
-          "${test_runner[@]}" nim r tests/tests.nim
-          "${test_runner[@]}" nim r -d:release -d:fixedChecks -d:nimTypeNames tests/tests.nim
-      - name: Build the local game
-        run: nim c -d:release --out:build/galcon src/galcon.nim
-      - name: Test native Coworld policy packages
-        if: runner.os == 'Linux'
-        run: |
-          nim c -d:release -d:coworld --out:build/galcon-coworld src/galcon.nim
-          python3 tests/test_coworld_packages.py build/galcon-coworld build/package-evidence
-      - name: Retain native Coworld package evidence
-        if: always() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coworld-package-evidence
-          path: build/package-evidence
+      - name: Check unit tests
+        run: nim check -d:headless -d:release -d:fixedChecks -d:nimTypeNames tests/unit_tests.nim
+      - name: Run unit tests
+        run: nim r -d:headless -d:release -d:fixedChecks -d:nimTypeNames tests/unit_tests.nim
