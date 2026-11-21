@@ -308,6 +308,7 @@ proc start(view: View, tutorial = 0, provided: Session = nil) =
   var options = view.options.clone()
   options.setup = options.matchSetup(view.difficulty, tutorial)
   view.session = if provided == nil: newSession(options) else: provided
+  view.session.applyLaunchOptions(view.options.game)
   when not defined(emscripten):
     view.saveReplay = view.front.replayPreferences.saveReplay and
       not captureActive()

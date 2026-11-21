@@ -63,7 +63,9 @@ proc matchOptions*(config: MatchConfig): Options =
     neutralsDontProduce: config.neutralsDontProduce,
     balancedMap: config.balancedMap)
   result.game.seed = config.seed
+  result.game.tickRate = TickRate
   result.game.maximumTicks = config.maximumTicks
+  result.game.seconds = config.maximumTicks div TickRate
   result.game.speed = 1
   result.setup = result.matchSetup(config.difficulty)
 

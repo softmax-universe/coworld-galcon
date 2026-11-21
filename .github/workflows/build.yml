@@ -27,6 +27,6 @@ jobs:
           nimby create
           nimby sync "${{ github.event.repository.name }}/galcon.lock"
       - name: Check unit tests
-        run: nim check -d:headless -d:release -d:fixedChecks -d:nimTypeNames tests/unit_tests.nim
+        run: nim check -d:release -d:fixedChecks -d:nimTypeNames tests/unit_tests.nim
       - name: Run unit tests
-        run: nim r -d:headless -d:release -d:fixedChecks -d:nimTypeNames tests/unit_tests.nim
+        run: nim r -d:release -d:fixedChecks -d:nimTypeNames tests/unit_tests.nim

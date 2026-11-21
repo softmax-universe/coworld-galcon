@@ -4,6 +4,8 @@ import
   polyworld/[menus, lobbies, connections, chrome, policies, inputs, displays],
   common, options, sessions, worlds, bots, multiplayer, themes, rasters
 
+from polyworld/cli import DurationFlags
+
 when not defined(emscripten):
   import polyworld/replaysaves, replays, replaylibraries, replaymenus,
     replaysettings
@@ -139,6 +141,8 @@ proc newFrontend*(options: Options): Frontend =
     seed: options.game.seed,
     difficulty: options.setup.difficulty), roomsScroll: FrameState(),
     rosterScroll: FrameState(), rng: initRand(2006))
+  if (options.game.specifiedFlags * DurationFlags) != {}:
+    result.config.maximumTicks = options.game.maximumTicks
   if options.playerCount > 2 or options.planetCount != 26:
     result.config.players = options.playerCount
     result.config.planets = options.planetCount

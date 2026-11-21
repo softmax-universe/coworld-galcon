@@ -5,6 +5,8 @@ import
 
 export cli.GameOptions
 
+const GalconFlags = AllCommonFlags - {LlmModeFlag}
+
 type
   Options* = ref object
     game*: GameOptions
@@ -16,14 +18,6 @@ type
     balancedMap*: bool
     neutralsPerPlayer*: int
     enemyShipsPassThrough*, neutralsDontProduce*: bool = true
-
-proc setDuration(options: var Options, name, text: string) =
-  ## Converts seconds and minutes using Galcon's original 32 Hz tick rate.
-  let count = parsePositiveInt32(text, name).int64
-  let ticks = count * TickRate * (if name == "--minutes": 60 else: 1)
-  if ticks > MaxTicks:
-    fail("Duration must not exceed 30 minutes")
-  options.game.maximumTicks = ticks.int32
 
 proc clone*(options: Options): Options =
   ## Makes an explicit menu configuration copy before starting another match.
@@ -95,132 +89,115 @@ proc parseOptions*(arguments: seq[string]): Options =
   result = Options()
   result.setup = defaultSetup()
   result.game.seed = result.setup.seed
-  result.game.speed = 1
-  result.game.maximumTicks = TickRate * 60 * 20
+  result.game.tickRate = TickRate
+  result.game.setMaximumTicks(TickRate * 60 * 20)
   when defined(headless):
     result.headless = true
   var index = 0
   while index < arguments.len:
-    let argument = arguments[index]
-    if argument.startsWith("--players=") or
-      argument.startsWith("--players:") or
-      argument.startsWith("--planets=") or
-      argument.startsWith("--planets:"):
-        let value = parsePositiveInt32(argument[10 .. ^1], argument[0 .. 8])
-        if argument.startsWith("--players"):
-          result.playerCount = value.int
-        else:
-          result.planetCount = value.int
-        inc index
-        continue
-    if argument.startsWith("--seconds=") or
-      argument.startsWith("--minutes="):
-        let separator = argument.find('=')
-        result.setDuration(
-          argument[0 ..< separator],
-          argument[separator + 1 .. ^1]
-        )
-        inc index
-        continue
-    case argument
-    of "--players":
-      result.playerCount = parsePositiveInt32(
-        arguments.argumentValue(index, argument), argument
-      ).int
-    of "--planets":
-      result.planetCount = parsePositiveInt32(
-        arguments.argumentValue(index, argument), argument
-      ).int
-    of "--neutrals-per-player":
-      result.neutralsPerPlayer = parsePositiveInt32(
-        arguments.argumentValue(index, argument), argument
-      ).int
-      if result.neutralsPerPlayer >= MaxPlanets:
-        fail("--neutrals-per-player exceeds the planet limit")
-    of "--balanced-map", "--enemy-ships-pass-through", "--neutrals-dont-produce":
-      let text = arguments.argumentValue(index, argument).toLowerAscii()
-      if text notin ["true", "false"]:
-        fail(argument & " must be true or false")
-      if argument == "--balanced-map":
-        result.balancedMap = text == "true"
-      elif argument == "--enemy-ships-pass-through":
-        result.enemyShipsPassThrough = text == "true"
-      else:
-        result.neutralsDontProduce = text == "true"
-    of "--player":
-      if index + 1 < arguments.len and
-        arguments[index + 1].len > 0 and
-        arguments[index + 1][0] in {'0' .. '9'}:
-          if result.game.playerSlot != 0:
-            fail("only one --player allowed")
-          result.game.playerSlot = parsePositiveInt32(
-            arguments.argumentValue(index, argument), argument
-          )
-      else:
-        discard result.game.takeCommonFlag(arguments, index, argument)
-      result.start = true
-    of "--menu":
-      result.menu = arguments.argumentValue(index, argument)
-      if result.menu notin ["main", "multiplayer", "battle", "settings"]:
-        when defined(emscripten):
-          fail("--menu must be main, multiplayer, battle, or settings")
-        else:
-          if result.menu != "replays":
-            fail("--menu must be main, multiplayer, battle, settings, or replays")
-    of "--server": result.server = arguments.argumentValue(index, argument)
-    of "--name": result.name = arguments.argumentValue(index, argument)
-    of "--join": result.join = arguments.argumentValue(index, argument)
-    of "--start":
-      result.start = true
-    of "--headless":
-      result.headless = true
-      result.start = true
-    of "--difficulty":
-      let text = arguments.argumentValue(index, argument).toLowerAscii()
-      case text
-      of "easy": result.setup.difficulty = Easy
-      of "medium": result.setup.difficulty = Medium
-      of "hard": result.setup.difficulty = Hard
-      of "crazy": result.setup.difficulty = Crazy
-      else: fail("--difficulty must be easy, medium, hard, or crazy")
-    of "--tutorial":
-      result.setup.tutorial = parsePositiveInt32(
-        arguments.argumentValue(index, argument), argument
-      ).int
-      result.start = true
-    of "--seconds", "--minutes":
-      result.setDuration(argument, arguments.argumentValue(index, argument))
-    of "--help", "-h":
-      echo "Galcon 2006 by Phil Hassey, ported to Nim on Polyworld."
-      echo "--start --difficulty easy|medium|hard|crazy --tutorial 1|2|3"
-      echo "--players N --planets N --player[:SLOT] --bot PATH[:COUNT]"
-      echo "--neutrals-per-player N: one home with N nearby neutrals each"
-      echo "--seed N --headless --mute --unmute --mute=false"
-      echo "--balanced-map true|false"
-      echo "--enemy-ships-pass-through true|false"
-      echo "--neutrals-dont-produce true|false"
-      echo "--ticks N --seconds N --minutes N --record FILE --replay FILE"
-      echo "--play true|false --speed N --windowSize WIDTHxHEIGHT"
-      echo "--vsync on|off"
-      echo "--screenshot FILE --frames N (default 30 rendered frames)"
-      echo "--menu main|multiplayer|battle|settings --server URL --name NAME --join ROOM"
-      when not defined(emscripten):
-        echo "--menu replays: open the desktop replay library"
-      quit(0)
+    let
+      argument = arguments[index]
+      (name, _, _) = splitFlag(argument)
+    if result.game.takeCommonFlag(arguments, index, argument):
+      discard
     else:
-      if not result.game.takeCommonFlag(arguments, index, argument):
-        fail("Unknown argument: " & argument)
+      case name
+      of "--players":
+        result.playerCount = parsePositiveInt32(
+          arguments.flagValue(index, argument), name
+        ).int
+      of "--planets":
+        result.planetCount = parsePositiveInt32(
+          arguments.flagValue(index, argument), name
+        ).int
+      of "--neutrals-per-player":
+        result.neutralsPerPlayer = parsePositiveInt32(
+          arguments.flagValue(index, argument), name
+        ).int
+        if result.neutralsPerPlayer >= MaxPlanets:
+          raise newException(GalconError,
+            "--neutrals-per-player exceeds the planet limit")
+      of "--balanced-map", "--enemy-ships-pass-through", "--neutrals-dont-produce":
+        let text = arguments.flagValue(index, argument).toLowerAscii()
+        if text notin ["true", "false"]:
+          raise newException(GalconError, name & " must be true or false")
+        if name == "--balanced-map":
+          result.balancedMap = text == "true"
+        elif name == "--enemy-ships-pass-through":
+          result.enemyShipsPassThrough = text == "true"
+        else:
+          result.neutralsDontProduce = text == "true"
+      of "--menu":
+        result.menu = arguments.flagValue(index, argument)
+        if result.menu notin ["main", "multiplayer", "battle", "settings"]:
+          when defined(emscripten):
+            raise newException(GalconError,
+              "--menu must be main, multiplayer, battle, or settings")
+          else:
+            if result.menu != "replays":
+              raise newException(GalconError,
+                "--menu must be main, multiplayer, battle, settings, or replays")
+      of "--start":
+        result.start = true
+      of "--headless":
+        result.headless = true
+        result.start = true
+      of "--difficulty":
+        let text = arguments.flagValue(index, argument).toLowerAscii()
+        case text
+        of "easy": result.setup.difficulty = Easy
+        of "medium": result.setup.difficulty = Medium
+        of "hard": result.setup.difficulty = Hard
+        of "crazy": result.setup.difficulty = Crazy
+        else:
+          raise newException(GalconError,
+            "--difficulty must be easy, medium, hard, or crazy")
+      of "--tutorial":
+        result.setup.tutorial = parsePositiveInt32(
+          arguments.flagValue(index, argument), name
+        ).int
+        result.start = true
+      of "--help", "-h":
+        echo "Galcon 2006 by Phil Hassey, ported to Nim on Polyworld."
+        echo commonUsageFor(GalconFlags)
+        echo "--start --difficulty easy|medium|hard|crazy --tutorial 1|2|3"
+        echo "--players N --planets N --headless"
+        echo "--neutrals-per-player N: one home with N nearby neutrals each"
+        echo "--balanced-map true|false"
+        echo "--enemy-ships-pass-through true|false"
+        echo "--neutrals-dont-produce true|false"
+        echo "--menu main|multiplayer|battle|settings"
+        when not defined(emscripten):
+          echo "--menu replays: open the desktop replay library"
+        quit(0)
+      else:
+        raise newException(GalconError, "Unknown argument: " & argument)
     inc index
+  result.game.rejectUnsupportedFlags(
+    if result.headless: GalconFlags
+    else: GalconFlags - {HeadlessTickRateFlag}
+  )
+  result.game.validateGameOptions(0, "")
+  if result.headless:
+    result.game.validateHeadlessOptions()
+  result.server = result.game.serverUrl
+  result.name = result.game.playerName
+  result.join = result.game.roomCode
+  if (result.server.len > 0 or result.join.len > 0) and
+    (result.game.botGroups.len > 0 or result.game.playerSlot > 0 or
+      result.game.replayPath.len > 0):
+      raise newException(GalconError,
+        "--server and --room cannot combine with --bot, --player, or --replay")
+  if result.headless and (result.server.len > 0 or result.join.len > 0):
+    raise newException(GalconError,
+      "--server and --room require the graphical multiplayer client")
   result.resolveOptions()
   if result.game.maximumTicks > MaxTicks or result.game.maximumTicks <= 0:
-    fail("Duration must be 1 through " & $MaxTicks & " ticks")
+    raise newException(GalconError,
+      "Duration must be 1 through " & $MaxTicks & " ticks")
   if result.game.botGroups.len > 0 or result.game.replayPath.len > 0 or
     result.game.playerSlot > 0:
-    result.start = true
-  if result.game.replayPath.len > 0 and
-    (result.game.botGroups.len > 0 or result.game.recordPath.len > 0 or
-    result.game.playerSlot > 0):
-      fail("--replay cannot combine with --bot, --player, or --record")
+      result.start = true
   try:
     result.game.capture.validateCapture(
       graphical = not result.headless and not defined(emscripten)
@@ -231,5 +208,9 @@ proc parseOptions*(arguments: seq[string]): Options =
     result.muted = true
 
 proc commandOptions*(): Options =
-  ## Parses the process arguments at the executable boundary.
-  parseOptions(commandLineParams())
+  ## Resolves input and output paths before starting any executable services.
+  try:
+    result = parseOptions(commandLineParams())
+    result.game.resolveGamePaths()
+  except CliError as error:
+    raise newException(GalconError, error.msg)

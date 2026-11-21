@@ -114,14 +114,18 @@ proc validate*(recording: Recording) =
   ## Checks the complete recording without mutating its live recorder state.
   discard recording.recordingCounts()
 
-proc encodeRecording*(recording: Recording): string =
-  ## Encodes this version's payload after validating its ordered stream.
+proc recordingData(recording: Recording): RecordingData =
+  ## Builds this version's payload after validating its ordered stream.
   recording.validate()
+  RecordingData(
+    setup: recording.setup, actions: recording.actions,
+    hashes: recording.hashes, names: recording.names
+  )
+
+proc encodeRecording*(recording: Recording): string =
+  ## Encodes the validated current-version payload with its shared header.
   try:
-    result = encodeReplayFile("galcon", ReplayVersion, RecordingData(
-      setup: recording.setup, actions: recording.actions,
-      hashes: recording.hashes, names: recording.names
-    ))
+    result = encodeReplayFile("galcon", ReplayVersion, recording.recordingData())
   except ReplayError, ValueError, FlattyError:
     raise newException(GalconError,
       "Cannot encode replay: " & getCurrentExceptionMsg())
@@ -140,10 +144,10 @@ proc decodeRecording*(bytes: string): Recording =
       "Cannot decode replay: " & getCurrentExceptionMsg())
 
 proc save*(recording: Recording, path: string) =
-  ## Writes the current action stream behind Polyworld's portable file header.
+  ## Writes the current action stream using the shared replay path handling.
   try:
-    writeFile(path, recording.encodeRecording())
-  except IOError, OSError, GalconError:
+    saveReplayFile(path, "galcon", ReplayVersion, recording.recordingData())
+  except IOError, OSError, ReplayError, ValueError, FlattyError, GalconError:
     raise newException(GalconError,
       "Cannot save replay: " & getCurrentExceptionMsg())
 

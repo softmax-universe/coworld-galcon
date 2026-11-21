@@ -24,7 +24,7 @@ type
       ## Human-facing roster names remain outside worlds, hubs, and bot APIs.
     recording*, replay*: Recording
     replayCursor*: int
-    playback*, done*, keepHistory*, networked*: bool
+    playback*, done*, keepHistory*, networked*, verbose*: bool
     human*: int
     maximumTicks*: int32
     recordPath*: string
@@ -100,6 +100,7 @@ proc newSession*(
   result = Session(
     maximumTicks: options.game.maximumTicks,
     recordPath: options.game.recordPath,
+    verbose: options.game.verbose,
     keepHistory: not options.headless or options.game.recordPath.len > 0,
     checkpoints: newSeqOfCap[Checkpoint](MaxCheckpoints),
     checkpointSpacing: CheckpointTicks
@@ -113,6 +114,9 @@ proc newSession*(
     result.world = newWorld(result.replay.setup)
     result.maximumTicks = result.replay.hashes.len.int32
     result.captureCheckpoint()
+    if result.verbose:
+      echo "Loaded replay: ", options.game.replayPath,
+        " ticks=", result.maximumTicks
     return
   result.liveWorld = newWorld(options.setup)
   result.world = result.liveWorld
@@ -149,7 +153,9 @@ proc newSession*(
     result.human = human
   var slot = 0
   for owner in 1 .. options.setup.players:
-    result.names[owner] = "Human"
+    result.names[owner] =
+      if options.game.playerName.len > 0: options.game.playerName
+      else: "Human"
     if owner != result.human:
       let source =
         if explicitRoster: policies[owner - 1]
@@ -175,6 +181,10 @@ proc newSession*(
   for owner in 1 .. options.setup.players:
     result.recording.names[owner] = result.names[owner]
   result.captureCheckpoint()
+  if result.verbose:
+    echo "Started Galcon: seed=", result.world.setup.seed,
+      " players=", result.world.setup.players, " human=", result.human,
+      " maximumTicks=", result.maximumTicks
 
 proc saveRecording*(session: Session, path: string) =
   ## Saves the complete live tape even when the viewer is looking backward.
@@ -183,6 +193,14 @@ proc saveRecording*(session: Session, path: string) =
   if not session.keepHistory:
     raise newException(GalconError, "This headless match was not recorded")
   session.recording.save(path)
+
+proc applyLaunchOptions*(session: Session, options: GameOptions) =
+  ## Retains local diagnostics and recording when a menu or room starts a match.
+  session.verbose = options.verbose
+  if not session.playback:
+    session.recordPath = options.recordPath
+    if session.recordPath.len > 0:
+      session.keepHistory = true
 
 when not defined(emscripten):
   proc recordingData*(session: Session): Recording =
@@ -234,6 +252,10 @@ proc finish*(session: Session) =
   session.done = true
   if session.recordPath.len > 0:
     session.saveRecording(session.recordPath)
+  if session.verbose:
+    echo "Finished Galcon: ticks=", session.world.tick,
+      " winner=", session.world.winner,
+      " replay=", session.recordPath
 
 proc restoreTo*(session: Session, target: int32) =
   ## Restores the nearest checkpoint without rerunning or rewinding live bots.
