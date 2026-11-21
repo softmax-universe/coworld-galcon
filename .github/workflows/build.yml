@@ -17,24 +17,40 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: treeform/setup-nim-action@v6
-      - name: Install Linux audio library
+      - name: Install Linux audio and display libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libopenal-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libopenal-dev xvfb xauth libgl1-mesa-dri libglx-mesa0
       - name: Install dependencies
         shell: bash
         run: |
           cd ..
           nimby create
           nimby sync "${{ github.event.repository.name }}/galcon.lock"
+      - name: Make Windows OpenAL available
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $openal = (Resolve-Path "$env:GALCON_DEPS/openal/deps/win64").Path
+          if (-not (Test-Path "$openal/soft_oal.dll")) {
+            throw "The pinned OpenAL dependency is missing soft_oal.dll"
+          }
+          $openal | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Check graphical and headless builds
         run: |
           nim check src/galcon.nim
           nim check -d:headless src/galcon.nim
       - name: Test deterministic simulation and rendering
+        shell: bash
         run: |
           nim check tests/tests.nim
-          nim r tests/tests.nim
-          nim r -d:release -d:fixedChecks -d:nimTypeNames tests/tests.nim
+          test_runner=()
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            test_runner=(xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1)
+          fi
+          "${test_runner[@]}" nim r tests/tests.nim
+          "${test_runner[@]}" nim r -d:release -d:fixedChecks -d:nimTypeNames tests/tests.nim
       - name: Build the local game
         run: nim c -d:release --out:build/galcon src/galcon.nim
       - name: Test native Coworld policy packages
