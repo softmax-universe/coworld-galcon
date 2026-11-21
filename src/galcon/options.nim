@@ -11,8 +11,6 @@ type
     setup*: Setup
     start*, headless*, muted*: bool
     menu*, server*, name*, join*: string
-    screenshot*: string
-    frames*: int = 1
     playerCount*: int
     planetCount*: int = 26
     balancedMap*: bool
@@ -177,13 +175,6 @@ proc parseOptions*(arguments: seq[string]): Options =
     of "--headless":
       result.headless = true
       result.start = true
-    of "--screenshot":
-      result.screenshot = arguments.argumentValue(index, argument)
-      result.muted = true
-    of "--frames":
-      result.frames = parsePositiveInt32(
-        arguments.argumentValue(index, argument), argument
-      ).int
     of "--difficulty":
       let text = arguments.argumentValue(index, argument).toLowerAscii()
       case text
@@ -211,7 +202,7 @@ proc parseOptions*(arguments: seq[string]): Options =
       echo "--ticks N --seconds N --minutes N --record FILE --replay FILE"
       echo "--play true|false --speed N --windowSize WIDTHxHEIGHT"
       echo "--vsync on|off"
-      echo "--screenshot FILE --frames N"
+      echo "--screenshot FILE --frames N (default 30 rendered frames)"
       echo "--menu main|multiplayer|battle|settings --server URL --name NAME --join ROOM"
       when not defined(emscripten):
         echo "--menu replays: open the desktop replay library"
@@ -230,8 +221,14 @@ proc parseOptions*(arguments: seq[string]): Options =
     (result.game.botGroups.len > 0 or result.game.recordPath.len > 0 or
     result.game.playerSlot > 0):
       fail("--replay cannot combine with --bot, --player, or --record")
-  if result.headless and result.screenshot.len > 0:
-    fail("--screenshot requires the graphical client")
+  try:
+    result.game.capture.validateCapture(
+      graphical = not result.headless and not defined(emscripten)
+    )
+  except ScreenshotError as error:
+    raise newException(GalconError, error.msg)
+  if result.game.capture.captureRequested():
+    result.muted = true
 
 proc commandOptions*(): Options =
   ## Parses the process arguments at the executable boundary.

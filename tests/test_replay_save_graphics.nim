@@ -132,7 +132,7 @@ proc testReplaySaveGraphics() =
   corrupt.hashes[0] = corrupt.hashes[0] xor 1
   corrupt.save(broken)
   view.options = parseOptions(@["--mute"])
-  view.options.screenshot = directory / "unexpected-frame.png"
+  view.options.game.capture.path = directory / "unexpected-frame.png"
   view.session = newSession(parseOptions(@["--replay", broken]))
   view.screen = GameScreen
   view.matchMenu = GameMenu
@@ -145,7 +145,7 @@ proc testReplaySaveGraphics() =
   doAssert view.session == nil
   doAssert view.matchMenu == HiddenMatchMenu
   doAssert "Replay diverged" in front.replayBrowser.message
-  doAssert not fileExists(view.options.screenshot)
+  doAssert not fileExists(view.options.game.capture.path)
   doAssert listReplays(library).len == 3,
     "A divergent imported replay must return to its browser without saving."
 

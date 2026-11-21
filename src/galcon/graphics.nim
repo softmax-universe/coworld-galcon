@@ -76,6 +76,7 @@ type
     selection: int
     difficulty: Difficulty
     tutorial, stat, boardRevision, frames: int
+    captureTarget: ScreenshotTarget
     transport: Transport
     presentation: Presentation
     lastTime: MonoTime
@@ -276,6 +277,8 @@ proc finishSession(view: View) =
   try:
     view.session.finish()
   except CatchableError as error:
+    if captureActive():
+      raise
     view.front.error = error.msg
     when not defined(emscripten):
       view.window.closeRequested = false
@@ -306,7 +309,8 @@ proc start(view: View, tutorial = 0, provided: Session = nil) =
   options.setup = options.matchSetup(view.difficulty, tutorial)
   view.session = if provided == nil: newSession(options) else: provided
   when not defined(emscripten):
-    view.saveReplay = view.front.replayPreferences.saveReplay
+    view.saveReplay = view.front.replayPreferences.saveReplay and
+      not captureActive()
   view.card = Card()
   view.matchMenu = HiddenMatchMenu
   view.returnPending = false
@@ -1184,14 +1188,12 @@ proc handleInput(view: View) =
           if view.session.networked: view.front.prepared.submit else: nil) > 0:
           view.launchSource.playSource()
 
-proc capture(view: View) =
-  ## Saves an actual Silky back-buffer screenshot for visual verification.
-  let image = newImage(view.window.size.x, view.window.size.y)
-  glReadPixels(0, 0, image.width.GLsizei, image.height.GLsizei,
-    GL_RGBA, GL_UNSIGNED_BYTE, image.data[0].addr)
-  image.flipVertical()
-  image.writeFile(view.options.screenshot)
-  view.closing = true
+proc present(view: View) =
+  ## Captures completed frames or presents the interactive window normally.
+  if captureFrame(view.window, view.frames, defaultPath = "galcon.png"):
+    view.closing = true
+  if not captureActive():
+    view.window.presentFrame(framePaceHz)
 
 proc layout(view: View) =
   ## Separates board scaling from the shared transport's logical coordinates.
@@ -1210,9 +1212,14 @@ proc layout(view: View) =
 
 proc frame(view: View) =
   ## Advances deterministic ticks through Polyworld's bounded transport loop.
+  if view.closing:
+    return
+  discard view.captureTarget.beginScreenshotFrame(view.window)
   let
     now = getMonoTime()
-    elapsed = min(0.25, (now - view.lastTime).inNanoseconds.float64 / 1e9)
+    elapsed =
+      if captureActive(): 1.0 / TickRate.float64
+      else: min(0.25, (now - view.lastTime).inNanoseconds.float64 / 1e9)
     frameStart = epochTime()
   view.lastTime = now
   if (view.screen == FrontScreen or
@@ -1221,7 +1228,8 @@ proc frame(view: View) =
       view.musicEnabled = not view.musicEnabled
   view.syncAudio()
   when not defined(emscripten):
-    view.window.updateWindowSettings()
+    if not captureActive():
+      view.window.updateWindowSettings()
   # Consume gameplay/UI input before draining a potentially expensive network
   # backlog. The percentage is visible this frame without waiting for any tick.
   let inputHandled = view.screen == GameScreen
@@ -1264,10 +1272,7 @@ proc frame(view: View) =
       else:
         if not view.front.browsingReplays:
           view.screen = MenuScreen
-    inc view.frames
-    if view.options.screenshot.len > 0 and view.frames >= view.options.frames:
-      view.capture()
-    view.window.presentFrame(framePaceHz)
+    view.present()
     reportReplayFrame(0, 0)
     return
   view.layout()
@@ -1278,7 +1283,7 @@ proc frame(view: View) =
       view.window.size.vec2 / view.sk.uiScale)
     discard view.front.identityUi(view.sk, view.window)
     view.sk.endUi()
-    view.window.presentFrame(framePaceHz)
+    view.present()
     reportReplayFrame(0, 0)
     return
   if not inputHandled:
@@ -1292,7 +1297,7 @@ proc frame(view: View) =
         view.session,
         elapsed.float32,
         frameStart,
-        singleTick = view.options.screenshot.len > 0,
+        singleTick = captureActive(),
         holdAtEnd = not view.card.terminal or
           view.card.holding(now.ticks.float64 / 1e9)
       ):
@@ -1375,10 +1380,7 @@ proc frame(view: View) =
   if view.matchMenu == HiddenMatchMenu:
     view.drawDiagnostics()
   view.window.runeInputEnabled = view.chatting or view.matchMenu == GameSettings
-  inc view.frames
-  if view.options.screenshot.len > 0 and view.frames >= view.options.frames:
-    view.capture()
-  view.window.presentFrame(framePaceHz)
+  view.present()
   when defined(emscripten) and defined(galconBrowserProbe):
     # Test-only, read-only snapshots. No gameplay or room mutation exports.
     if view.session != nil:
@@ -1411,13 +1413,17 @@ proc installChatInput(view: View) =
 
 proc runGraphics*(options: Options) =
   ## Opens a local Silky 2D window with the original assets and BASIC opponents.
+  configureCapture(options.game.capture, "galcon.png")
+  if captureActive():
+    options.muted = true
   let
     size =
       if options.game.windowWidth > 0:
         ivec2(options.game.windowWidth, options.game.windowHeight)
       else: ivec2(960, 720)
     window = newWindow("Galcon 2006", size,
-      vsync = options.game.vsync)
+      visible = not captureActive(),
+      vsync = options.game.vsync and not captureActive())
   window.makeContextCurrent()
   loadExtensions()
   let
@@ -1460,7 +1466,8 @@ proc runGraphics*(options: Options) =
   )
   view.sk.builder = builder
   view.sk.theme = galconTheme()
-  view.front.preferences.applyPreferences(window, options.game.windowWidth == 0)
+  view.front.preferences.applyPreferences(window,
+    options.game.windowWidth == 0 and not captureActive())
   if view.front.page != HomeMenu:
     view.screen = FrontScreen
   when not defined(emscripten):
@@ -1510,4 +1517,5 @@ proc runGraphics*(options: Options) =
     view.captureSource, view.uiSources[UiHover], view.uiSources[UiClick]]:
       if source != nil:
         source.close()
+  view.captureTarget.releaseScreenshotTarget()
   window.close()
