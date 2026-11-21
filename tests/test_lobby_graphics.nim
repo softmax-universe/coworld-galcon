@@ -15,7 +15,7 @@ proc handleButtonRelease(window: Window, button: Button) =
 
 proc runeEvent(window: Window, rune: Rune) = handleRuneTemplate()
 
-let window = newWindow("Galcon lobby regression", ivec2(1514, 970), visible = false)
+let window = newWindow("Galcon lobby regression", ivec2(960, 720), visible = false)
 window.makeContextCurrent()
 loadExtensions()
 let builder = newAtlasBuilder(4096, 8)
@@ -53,26 +53,40 @@ proc drawFrame() =
   window.syncTestInput()
   front.draw(sk, window)
 
+proc lobbyPoint(point: IVec2): Vec2 =
+  ## Locates a design-canvas point in the actual centered lobby viewport.
+  let origin = (window.size.vec2 / sk.uiScale - vec2(1514, 970)) / 2
+  origin + point.vec2
+
+proc screenPoint(point: IVec2): IVec2 =
+  ## Converts a lobby design point to the actual native pixel coordinates.
+  (lobbyPoint(point) * sk.uiScale).ivec2
+
 proc expectReadyPip(ready: bool, label: string, disabled = false) =
   ## Reads the actual Ready button, not the roster or a presentation helper.
   window.state.perFrame = PerFrame()
-  window.state.mousePos = ivec2(750, 880)
+  window.state.mousePos = ivec2(-100)
   let sent = front.connection.client.outgoing.len
   drawFrame()
   doAssert front.connection.client.outgoing.len == sent,
     "Drawing readiness must never submit Ready or alter retained intent"
-  let image = newImage(1514, 970)
-  glReadPixels(0, 0, 1514, 970, GL_RGBA, GL_UNSIGNED_BYTE, image.data[0].addr)
+  let image = newImage(window.size.x, window.size.y)
+  glReadPixels(0, 0, window.size.x, window.size.y,
+    GL_RGBA, GL_UNSIGNED_BYTE, image.data[0].addr)
   image.flipVertical()
   let wanted = if disabled: sk.theme.disabledTextColor
     elif ready: rgbx(110, 230, 125, 255) else: rgbx(244, 108, 104, 255)
+  let
+    first = screenPoint(ivec2(494, 909))
+    last = screenPoint(ivec2(520, 935))
   var matching = 0
-  for y in 909 ..< 935:
-    for x in 494 ..< 520:
+  for y in max(0, first.y.int) ..< min(image.height, last.y.int):
+    for x in max(0, first.x.int) ..< min(image.width, last.x.int):
       if image[x, y] == wanted: inc matching
   image.writeFile(Root / "build" / ("ready-pip-" & label & ".png"))
   echo "Ready pip ", label, " scale=", sk.uiScale, " matches=", matching
-  doAssert matching > 20, label & ": Ready button must draw the authoritative red/green status pip"
+  doAssert matching.float32 > 20 * sk.uiScale * sk.uiScale,
+    label & ": Ready button must draw the authoritative red/green status pip"
 
 front.connection.client.snapshot.participants[1].ready = true
 expectReadyPip(false, "unready")
@@ -105,7 +119,7 @@ for bot in LobbyBot:
     "Reopening the slot picker must preserve a valid bot selection"
 front.ui.selectedSeat = -1
 front.connection.client.outgoing.setLen(0)
-window.state.mousePos = ivec2(120, 360)
+window.state.mousePos = screenPoint(ivec2(120, 360))
 window.handleButtonPress(MouseRight)
 drawFrame()
 doAssert front.contextSeat == 2, "Actual right-click must open the target player's menu"
@@ -114,7 +128,7 @@ window.handleButtonRelease(MouseRight)
 drawFrame()
 window.state.perFrame = PerFrame()
 # The popup is anchored at (136, 344); its action is at (148, 388).
-window.state.mousePos = ivec2(220, 412)
+window.state.mousePos = screenPoint(ivec2(220, 412))
 window.handleButtonPress(MouseLeft)
 drawFrame()
 window.state.perFrame = PerFrame()
@@ -124,15 +138,18 @@ doAssert front.contextSeat == -1, front.error
 doAssert front.connection.client.outgoing.len == 1
 let kick = decode(front.connection.client.outgoing[0])
 doAssert kick.kind == KickParticipant and kick.participant == 2
-proc click(point: IVec2) =
+proc clickAt(point: Vec2) =
   ## Clicks a real rendered lobby control across press and release frames.
   window.state.perFrame = PerFrame()
-  window.state.mousePos = point
+  window.state.mousePos = (point * sk.uiScale).ivec2
   window.handleButtonPress(MouseLeft)
   drawFrame()
   window.state.perFrame = PerFrame()
   window.handleButtonRelease(MouseLeft)
   drawFrame()
+proc click(point: IVec2) =
+  ## Clicks a control positioned on the lobby's centered design canvas.
+  clickAt(lobbyPoint(point))
 click(ivec2(1440, 464))
 doAssert front.synchronizing()
 doAssert decode(front.connection.client.outgoing[^1]).kind == ResizeRoom
@@ -145,16 +162,16 @@ front.connection.client.snapshot.participant = 1
 front.pendingConfig = ""
 front.config.players = 4
 front.playerContext(3)
-front.contextAt = vec2(136, 344)
+front.contextAt = lobbyPoint(ivec2(136, 344))
 front.connection.client.snapshot.seats[3].owner = 9
 click(ivec2(220, 412))
 doAssert front.connection.client.outgoing.len == 0, "Rendered stale context must not remove replacement bot"
 front.contextSeat = -1
 front.connection.client.snapshot.seats[3].owner = 2
 front.playerContext(3)
-front.contextAt = vec2(136, 344)
+front.contextAt = lobbyPoint(ivec2(136, 344))
 window.state.perFrame = PerFrame()
-window.state.mousePos = ivec2(220, 412)
+window.state.mousePos = screenPoint(ivec2(220, 412))
 window.handleButtonRelease(MouseLeft)
 drawFrame()
 doAssert front.connection.client.outgoing.len == 0, "Release without fresh popup press must not act"
@@ -174,7 +191,7 @@ front.preferences.name = "saved 🙂"
 front.page = SingleMenu
 front.online = false
 front.editingPlayer = false
-click(ivec2(1370, 36))
+clickAt(vec2(window.size.x.float32 / sk.uiScale - 144, 36))
 doAssert front.editingPlayer, "Top-right identity button must open real modal"
 let saved = getConfig(AppName, "settings.json")
 front.playerDraft = "mason :) 空 白"

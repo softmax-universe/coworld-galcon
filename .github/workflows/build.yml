@@ -51,6 +51,19 @@ jobs:
         run: |
           nim check src/galcon.nim
           nim check -d:headless src/galcon.nim
+      - name: Test native replay menus
+        shell: bash
+        env:
+          GALCON_REPLAY_MENU_SCREENSHOT: ${{ github.workspace }}/build/replay-menu.png
+        run: |
+          test_runner=()
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            test_runner=(xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1)
+          fi
+          for fixture in test_lobby_graphics test_replay_menu_render test_replay_save_graphics; do
+            nim check -d:release "tests/${fixture}.nim"
+            "${test_runner[@]}" nim r -d:release "tests/${fixture}.nim"
+          done
       - name: Test deterministic simulation and rendering
         shell: bash
         run: |

@@ -7,7 +7,7 @@ import
 
 privateAccess(Window)
 
-proc verifyReplayMenu(size: IVec2, screenshot: string, zoom = 0) =
+proc verifyReplayMenu(requestedSize: IVec2, screenshot: string, zoom = 0) =
   ## Exercises the shared replay controls using Galcon's real menu artwork.
   let
     previousMode = uiScaleMode
@@ -18,7 +18,8 @@ proc verifyReplayMenu(size: IVec2, screenshot: string, zoom = 0) =
   defer:
     uiScaleMode = previousMode
     uiScalePercent = previousPercent
-  let window = newWindow("Galcon replay browser", size, visible = false)
+  let window = newWindow("Galcon replay browser", requestedSize, visible = false)
+  let size = window.size
   defer: window.close()
   window.makeContextCurrent()
   loadExtensions()
