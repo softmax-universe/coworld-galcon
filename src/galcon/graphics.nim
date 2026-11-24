@@ -667,9 +667,36 @@ proc drawSidebar(view: View) {.measure.} =
   view.sk.popClipRect()
 
 proc resultButton(view: View): Rect =
-  ## Board-space hit target shared by drawing and native/browser input.
-  let height = 142.0'f + min(38.0'f, 310.0'f / view.session.world.setup.players.float32) * view.session.world.setup.players.float32
-  rect(180, (Height.float32 + height) / 2 - 54, 280, 40)
+  ## Centers a shared UI button beneath the board-scaled result rows.
+  let
+    players = view.session.world.setup.players.float32
+    height = 142.0'f + min(38.0'f, 310.0'f / players) * players
+    center = view.presentation.boardOrigin +
+      vec2(Width.float32 / 2, (Height.float32 + height) / 2 - 34) *
+        view.presentation.boardScale
+    width = min(280.0'f, 528 * view.presentation.boardScale)
+  rect(center - vec2(width / 2, 22), vec2(width, 44))
+
+proc drawResultButton(view: View): bool =
+  ## Uses the same themed widget and feedback as lobby and menu buttons.
+  if view.screen != EndScreen or not view.card.shown or not view.card.terminal:
+    return
+  let
+    button = view.resultButton()
+    label =
+      if view.returnPending and view.session.networked:
+        if view.front.connection.client.participant ==
+          view.front.connection.client.snapshot.participant:
+            "Returning to Lobby..."
+        else:
+          "Waiting for host..."
+      elif view.session.networked:
+        "Return to Lobby"
+      else:
+        "Return to Menu"
+    enabled = not view.returnPending and view.matchMenu == HiddenMatchMenu and
+      not debugMenuOpen and not view.diagnosticsOwnInput
+  view.front.menuButton(view.sk, label, button.xy, button.w, enabled = enabled)
 
 proc drawCard(view: View) {.measure.} =
   ## Draws the approved borderless native-font card on one shared ship scale.
@@ -729,18 +756,8 @@ proc drawCard(view: View) {.measure.} =
         break
       at = min(at + stride, endTick)
 
-  if view.card.terminal:
-    let button = view.resultButton()
-    view.cardPanel(view.offset + button.xy, button.wh, rgbx(24, 66, 44, 255))
-    let label = if view.returnPending and view.session.networked:
-      if view.front.connection.client.participant == view.front.connection.client.snapshot.participant:
-        "Returning to Lobby..."
-      else: "Waiting for host..."
-    elif view.session.networked: "Return to Lobby"
-    else: "Return to Menu"
-    let width = view.sk.rasterTextSize("Score", label).x
-    view.text("Score", label, vec2((Width.float32 - width) / 2, button.y + 10), White)
-    when not defined(emscripten):
+  when not defined(emscripten):
+    if view.card.terminal:
       if view.saveReplay and not view.session.playback:
         let message =
           if view.session.replaySaveError.len > 0:
@@ -1155,9 +1172,6 @@ proc handleInput(view: View) =
     if clicked or entered:
       view.screen = GameScreen
   of EndScreen:
-    if clicked and overlaps(vec2(x.float32, y.float32), view.resultButton()):
-      view.returnToMenu()
-      return
     if entered:
       if view.tutorial in 1 .. 2 and view.session.world.winner == 1:
         view.start(view.tutorial + 1)
@@ -1394,7 +1408,10 @@ proc frame(view: View) =
       )
     if serial != view.transport.player.seekSerial:
       view.controls.holding = false
+  let returnClicked = view.drawResultButton()
   view.sk.endUi()
+  if returnClicked:
+    view.returnToMenu()
   if view.matchMenu != HiddenMatchMenu or debugMenuOpen:
     view.sk.interactor = modalInteractions
   view.drawMatchMenu()

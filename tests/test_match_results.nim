@@ -3,6 +3,7 @@ include ../src/galcon/graphics
 import std/[importutils, sequtils]
 import windy/internal
 import polyworld/relays
+import nativeinputs
 privateAccess(Window)
 proc handleButtonPress(window: Window, button: Button) = handleButtonPressTemplate()
 proc handleButtonRelease(window: Window, button: Button) = handleButtonReleaseTemplate()
@@ -14,7 +15,8 @@ for i in 0..1:
   let window = newWindow("Galcon results", ivec2(1514,970), visible=false)
   window.makeContextCurrent()
   loadExtensions()
-  let builder = newAtlasBuilder(64,8)
+  let builder = newAtlasBuilder(4096,8)
+  builder.addMenuAssets()
   let front = newFrontend(parseOptions(@["--mute"]))
   front.preferences.name = "Result human " & $i
   front.preferences.bindings = GalconControls.defaults
@@ -22,6 +24,7 @@ for i in 0..1:
   front.config = MatchConfig(players:4, maximumTicks:48)
   front.connection = Connection(client: RoomClient(identity:identity(), name:front.preferences.name))
   views.add View(front:front, window:window, sk:newSilky(window,builder.atlasImage,builder.atlas), screen:FrontScreen)
+  views[^1].sk.theme = galconTheme()
   front.connection.client.opened()
 
 proc exchange() =
@@ -43,11 +46,47 @@ proc exchange() =
     if not traffic:return
   doAssert false,"traffic failed to settle"
 proc press(v:View,button:Button) =
+  ## Sends one keyboard shortcut through the production input handler.
   v.window.state.perFrame = PerFrame()
   v.window.handleButtonPress(button)
   v.handleInput()
   v.window.handleButtonRelease(button)
   v.window.state.perFrame = PerFrame()
+
+proc resultFrame(view: View): bool =
+  ## Runs the shared result widget and applies its release after drawing.
+  view.window.makeContextCurrent()
+  view.window.syncTestInput()
+  view.sk.beginUi(view.window, view.window.size)
+  result = view.drawResultButton()
+  view.sk.endUi()
+  if result:
+    view.returnToMenu()
+
+proc clickResult(view: View, enabled = true) =
+  ## Exercises real screen-space hover, press, and release without early action.
+  let button = view.resultButton()
+  let center = (button.xy + button.wh / 2) * view.sk.uiScale
+  view.window.state.perFrame = PerFrame()
+  view.window.state.mousePrevPos = view.window.state.mousePos
+  view.window.state.mousePos = ivec2(-100, -100)
+  discard view.resultFrame()
+  view.window.state.mousePrevPos = view.window.state.mousePos
+  view.window.state.mousePos = center.ivec2
+  discard view.resultFrame()
+  view.window.state.mousePrevPos = view.window.state.mousePos
+  discard view.resultFrame()
+  view.window.state.doubleClickTime = 0
+  view.window.handleButtonPress(MouseLeft)
+  view.handleInput()
+  doAssert not view.resultFrame(), "Result buttons must not activate on press"
+  view.window.state.perFrame = PerFrame()
+  view.window.handleButtonRelease(MouseLeft)
+  view.handleInput()
+  doAssert view.resultFrame() == enabled,
+    "Only an enabled result button may activate on release"
+  view.window.state.perFrame = PerFrame()
+  doAssert not view.resultFrame(), "Idle result frames must not repeat activation"
 
 exchange()
 let host=views[0]
@@ -115,15 +154,17 @@ for round in 1..2:
   doAssert guest.screen==EndScreen,"Guest must remain on results, not a fake lobby"
   doAssert guest.front.connection.client.outgoing.allIt(decode(it).kind != ReturnLobby),"Only owner can reopen"
   doAssert guest.returnPending,"Guest gets explicit waiting-for-host state"
+  clickResult(guest, enabled = false)
+  doAssert guest.front.connection.client.outgoing.allIt(
+    decode(it).kind != ReturnLobby), "Waiting guests cannot reopen the lobby"
   if round==1:
     press(host,KeyEscape)
   else:
-    let button = host.resultButton()
-    let p = (host.presentation.boardOrigin + (button.xy + button.wh / 2) * host.presentation.boardScale) * host.sk.uiScale
-    host.window.state.mousePos=ivec2(p.x.int32,p.y.int32)
-    press(host,MouseLeft)
+    clickResult(host)
   doAssert host.screen==EndScreen,"Await authoritative Lobby, never show intermediate fake lobby"
-  doAssert host.front.connection.client.outgoing.anyIt(decode(it).kind==ReturnLobby),"Escape must reopen directly"
+  doAssert host.front.connection.client.outgoing.countIt(
+    decode(it).kind == ReturnLobby) == 1,
+    "Returning must submit exactly one lobby request"
   exchange()
   for v in views:
     v.syncMatchScreen()
@@ -162,3 +203,22 @@ doAssert guest.front.launch == nil
 doAssert guest.screen == FrontScreen and guest.front.page == MultiplayerMenu
 doAssert not guest.chatting and guest.chatInput.len == 0
 echo "Live kick clears the match view while connection loss preserves it"
+
+let local = View(
+  front: newFrontend(parseOptions(@["--mute"])),
+  window: host.window,
+  sk: host.sk,
+  session: newSession(parseOptions(@["--players", "2", "--ticks", "1"]),
+    @["", ""], @["Local", "Opponent"], 1, true),
+  screen: EndScreen
+)
+local.session.step()
+local.card.update(true, 1)
+local.layout()
+local.sk.resetInteractions()
+clickResult(local)
+doAssert local.screen == MenuScreen,
+  "The shared local results button must return to the main menu"
+echo "Local and network results use the same release-driven button"
+for view in views:
+  view.window.close()
