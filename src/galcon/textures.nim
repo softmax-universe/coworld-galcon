@@ -7,7 +7,7 @@ import
 const
   StarSpriteCount* = 8
   BackgroundStarCount = 224
-  BackgroundStarScale = 2.0'f
+  BackgroundStarScale = 4.0'f
 
 type
   BackgroundStar* = object
