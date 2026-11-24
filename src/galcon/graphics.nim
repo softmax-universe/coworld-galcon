@@ -118,14 +118,17 @@ proc line(view: View, a, b: Vec2, color: ColorRGBX, width = 1.0'f) =
   view.sk.drawTriangle([a + normal, a - normal, b + normal], uvs, colors)
   view.sk.drawTriangle([a - normal, b - normal, b + normal], uvs, colors)
 
-proc ring(view: View, center: Vec2, radius: float32, color: ColorRGBX) =
-  ## Draws the original bright circular selection marker in logical pixels.
+proc ring(
+    view: View, center: Vec2, radius: float32, color: ColorRGBX,
+    width = 2.0'f
+) =
+  ## Draws a circular ownership or selection marker in logical pixels.
   var previous = center + vec2(radius, 0)
   for i in 1 .. 64:
     let
       angle = i.float32 * PI.float32 / 32
       next = center + vec2(math.cos(angle), math.sin(angle)) * radius
-    view.line(previous, next, color, 2)
+    view.line(previous, next, color, width)
     previous = next
 
 proc text(
@@ -766,6 +769,12 @@ proc drawGame(view: View) {.measure.} =
     world = view.session.world
     compact = world.setup.placement == ClusteredPlacement or
       world.planets.len > CompactPlanetThreshold
+    hoveredOwner =
+      if world.validPlanet(view.controls.hover) and not view.card.shown and
+        view.matchMenu == HiddenMatchMenu:
+          world.planets[view.controls.hover].owner
+      else:
+        0
   view.controls.clean(world)
   let selectionColor = ownerColor(max(view.session.human, 1))
   var
@@ -773,11 +782,15 @@ proc drawGame(view: View) {.measure.} =
     sending = 0
   for i, planet in world.planets:
     let center = view.offset + vec2(planet.x.toFloat32, planet.y.toFloat32)
+    if planet.owner > 0 and
+      (planet.owner == view.session.human or planet.owner == hoveredOwner):
+        view.ring(center, planet.radius.float32 + 4, Shadow, 4)
+        view.ring(center, planet.radius.float32 + 4, ownerColor(planet.owner))
     if view.controls.selected[i]:
       inc selected
       sending += roundedRatio(planet.ships * view.controls.percent,
         FixedScale * 100).int
-      view.ring(center, planet.radius.float32 + 4, selectionColor)
+      view.ring(center, planet.radius.float32 + 8, selectionColor)
       if view.controls.holding and view.controls.ordering:
         let target =
           if view.controls.hover >= 0:
@@ -807,12 +820,19 @@ proc drawGame(view: View) {.measure.} =
     view.line(vec2(b.x, a.y), b, Green)
     view.line(b, vec2(a.x, b.y), Green)
     view.line(vec2(a.x, b.y), a, Green)
-  if view.controls.hover >= 0 and not view.card.shown:
-    let p = world.planets[view.controls.hover]
-    view.text("Hover", p.name & "   Prod: " & $p.production &
-      "   Morale: " & $p.morale & "   Ships: " & $p.shipCount,
-      vec2(8, 6), Green,
-      maxWidth = Width.float32 - 16)
+  if world.validPlanet(view.controls.hover) and not view.card.shown and
+    view.matchMenu == HiddenMatchMenu:
+      let
+        planet = world.planets[view.controls.hover]
+        stats = "   Prod: " & $planet.production &
+          "   Morale: " & $planet.morale & "   Ships: " & $planet.shipCount
+        name = if planet.owner == 0: "Neutral"
+          else: view.session.displayName(planet.owner)
+        label = view.fitText("Hover", name,
+          Width.float32 - 16 - view.sk.rasterTextSize("Hover", stats).x)
+      view.text("Hover", label & stats,
+        vec2(8, 6), if planet.owner == 0: Gray else: ownerColor(planet.owner),
+        maxWidth = Width.float32 - 16)
   if view.session.human > 0 and not view.session.inHistory:
     let status =
       "From: " & $selected & "   Ships: " & $sending &
