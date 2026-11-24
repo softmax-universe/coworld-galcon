@@ -4,7 +4,7 @@ import
   galcon/[chats, common, multiplayer, options, replays, worlds],
   test_bots, test_flocking, test_options as _,
   test_cosmetic_ready_authority as _,
-  test_replay_library as _, test_recording_library as _
+  test_replay_library as _, test_recording_library as _, test_local_rematch as _
 
 echo "Shared screenshot command-line spellings and defaults"
 block:

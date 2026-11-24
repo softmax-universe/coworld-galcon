@@ -35,6 +35,9 @@ type
       ## Optional viewer sampling stays outside recorded simulation state.
     historyMargin*: int32
       ## A viewer may replay a short lead-in to reconstruct transient art.
+    rematchSetup: Setup
+    rematchSources: array[MaxPlayers + 1, string]
+      ## Local policies stay in memory so rematches never reread changed files.
     when not defined(emscripten):
       replaySaving*: ReplaySaveState
       replaySaveError*: string
@@ -120,6 +123,7 @@ proc newSession*(
     return
   result.liveWorld = newWorld(options.setup)
   result.world = result.liveWorld
+  result.rematchSetup = options.setup.clone()
   result.chat = newChatHub(result.liveWorld)
   result.recording = Recording(
     setup: options.setup,
@@ -165,6 +169,7 @@ proc newSession*(
         if explicitRoster: labels[owner - 1]
         elif names.len == 0: "Classic Bot"
         else: names[slot]
+      result.rematchSources[owner] = source
       if options.setup.counts[owner] > 0 and source.len > 0:
         result.brains[owner] = newBrain(result.liveWorld, owner, source,
           result.chat)
@@ -185,6 +190,34 @@ proc newSession*(
     echo "Started Galcon: seed=", result.world.setup.seed,
       " players=", result.world.setup.players, " human=", result.human,
       " maximumTicks=", result.maximumTicks
+
+proc canRematch*(session: Session): bool =
+  ## Replays lack policies, and network matches need the host's room protocol.
+  session != nil and session.done and not session.playback and
+    not session.networked and session.rematchSetup != nil and
+    session.liveWorld != nil
+
+proc rematch*(session: Session, seed: int32): Session =
+  ## Rebuilds the same local roster and rules with fresh bots and a new seed.
+  if not session.canRematch():
+    raise newException(GalconError, "This match cannot be restarted locally")
+  if seed < 0 or seed == session.rematchSetup.seed:
+    raise newException(GalconError, "A rematch needs a different map seed")
+  let
+    setup = session.rematchSetup.clone()
+    options = Options(setup: setup, headless: not session.keepHistory)
+  setup.seed = seed
+  options.game.seed = seed
+  options.game.tickRate = TickRate
+  options.game.maximumTicks = session.maximumTicks
+  options.game.seconds = session.maximumTicks div TickRate
+  options.game.verbose = session.verbose
+  var policies, labels: seq[string]
+  for owner in 1 .. setup.players:
+    policies.add session.rematchSources[owner]
+    labels.add session.names[owner]
+  # Each rematch has a new recording; never overwrite the prior explicit export.
+  result = newSession(options, policies, labels, session.human, true)
 
 proc saveRecording*(session: Session, path: string) =
   ## Saves the complete live tape even when the viewer is looking backward.

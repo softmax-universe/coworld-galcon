@@ -17,6 +17,8 @@ const
   DefaultLobbyPlayers = 4
 
 type
+  RematchStage = enum
+    NoRematch, ReopeningRematch, ConfiguringRematch, StartingRematch
   LobbyBot* = enum
     ClassicBot, TruceBot, ExpandBot, ChattyBot
   UiCue* = enum
@@ -53,6 +55,10 @@ type
     online: bool
     revision: uint32
     pendingConfig: string
+    rematchStage: RematchStage
+    rematchRoom: RoomMessage
+    rematchPayload: string
+    rematchHash: uint64
     pendingJoin: bool
     autoSeatRoom: string
     autoSeatPending: bool
@@ -233,6 +239,7 @@ proc connect*(front: Frontend) =
   front.prepared = nil
   front.revision = 0
   front.pendingConfig = ""
+  front.rematchStage = NoRematch
   front.autoSeatRoom = ""
   front.autoSeatPending = false
   front.autoSeatClaim = -1
@@ -253,6 +260,7 @@ proc leave*(front: Frontend) =
   front.ui.fillBotMenu = LobbyBotMenu()
   front.page = HomeMenu
   front.pendingConfig = ""
+  front.rematchStage = NoRematch
   front.autoSeatRoom = ""
   front.autoSeatPending = false
   front.autoSeatClaim = -1
@@ -329,7 +337,117 @@ proc createRoom*(front: Frontend) =
 
 proc synchronizing*(front: Frontend): bool =
   ## Exposes the in-flight server roster acknowledgement to controls and tests.
-  front.pendingConfig.len > 0 or front.autoSeatPending
+  front.pendingConfig.len > 0 or front.autoSeatPending or
+    front.rematchStage != NoRematch
+
+proc rematchPending*(front: Frontend): bool =
+  ## Keeps end-screen navigation disabled until the next battle starts.
+  front.rematchStage != NoRematch
+
+proc nextBattleSeed*(front: Frontend, previous: int32): int32 =
+  ## Chooses a fresh map seed outside the simulation's random stream.
+  result = front.rng.rand(int32.high.int).int32
+  if result == previous:
+    result = if previous == int32.high: 0 else: previous + 1
+
+proc canRematch*(front: Frontend): bool =
+  ## Only the connected room host can restart a completed battle.
+  if front.connection == nil or front.synchronizing():
+    return false
+  let client = front.connection.client
+  client.connected and client.welcomed and client.snapshot.room.len > 0 and
+    client.snapshot.participant == client.participant and
+    client.snapshot.phase in {Ended, Desynced}
+
+proc requestRematch*(front: Frontend) =
+  ## Preserves authoritative setup and policies while reopening the same room.
+  if front.rematchPending():
+    return
+  if not front.canRematch():
+    reject("Only the connected host can rematch a completed battle")
+  let
+    client = front.connection.client
+    config = parseConfig(client.snapshot.payload)
+  config.seed = front.nextBattleSeed(config.seed)
+  front.rematchRoom = client.snapshot
+  # BeginMatch owns the current id; RoomState can still name the prior match.
+  if client.began:
+    front.rematchRoom.match = client.match
+  front.rematchPayload = config.toJson()
+  var next = front.rematchRoom
+  next.payload = front.rematchPayload
+  front.rematchHash = next.setupHash()
+  front.rematchStage = ReopeningRematch
+  front.error = ""
+  client.send(RoomMessage(kind: ReturnLobby))
+
+proc cancelRematch(front: Frontend, reason: string) =
+  ## Leaves a changed or interrupted room available for ordinary lobby controls.
+  front.rematchStage = NoRematch
+  front.pendingConfig = ""
+  front.error = "Rematch canceled: " & reason
+
+proc syncRematch(front: Frontend) =
+  ## Advances each command only after its authoritative room acknowledgement.
+  if not front.rematchPending():
+    return
+  let
+    client = front.connection.client
+    snapshot = client.snapshot
+    original = front.rematchRoom
+  if not client.connected or not client.welcomed:
+    front.cancelRematch("connection interrupted")
+    return
+  if snapshot.room != original.room or
+    snapshot.participant != client.participant or
+    snapshot.name != original.name or
+    (front.rematchStage != ReopeningRematch and snapshot.phase == Lobby and
+      snapshot.flag != original.flag):
+      front.cancelRematch("room or host changed")
+      return
+  let hash = snapshot.setupHash()
+  case front.rematchStage
+  of NoRematch:
+    discard
+  of ReopeningRematch:
+    if hash != original.setupHash() or
+      (snapshot.phase == Lobby and snapshot.match != original.match):
+      front.cancelRematch("players or battle settings changed")
+    elif snapshot.phase == Lobby:
+      # Match snapshots use flag for pause, while lobby snapshots use visibility.
+      front.rematchRoom.flag = snapshot.flag
+      front.pendingConfig = front.rematchPayload
+      front.rematchStage = ConfiguringRematch
+      client.send(RoomMessage(kind: ConfigureRoom, name: original.name,
+        number: original.seats.len.uint32, tickRate: original.tickRate,
+        flag: snapshot.flag, payload: front.rematchPayload))
+    elif snapshot.phase notin {Ended, Desynced}:
+      front.cancelRematch("battle is no longer completed")
+  of ConfiguringRematch:
+    if snapshot.phase != Lobby or snapshot.match != original.match:
+      front.cancelRematch("room is no longer waiting for the rematch")
+    elif hash == front.rematchHash:
+      # A spectator host also needs a valid fresh simulation before launching.
+      if front.prepared == nil or front.prepared.revision != snapshot.revision:
+        try:
+          front.prepared = prepareMatch(client, front.sources())
+        except GalconError, RoomsError, PolicyError:
+          front.cancelRematch(getCurrentExceptionMsg())
+          return
+      front.rematchStage = StartingRematch
+      client.send(RoomMessage(kind: StartMatch, revision: snapshot.revision,
+        hash: snapshot.setupHash()))
+    elif hash != original.setupHash():
+      front.cancelRematch("players or battle settings changed")
+  of StartingRematch:
+    if hash != front.rematchHash:
+      front.cancelRematch("players or battle settings changed")
+    elif client.began and client.match != original.match and
+      front.prepared != nil and
+      front.prepared.started:
+        front.rematchStage = NoRematch
+    elif snapshot.phase != Lobby or snapshot.match != original.match:
+      front.cancelRematch("room is no longer starting the rematch")
 
 proc claimJoiningSeat(front: Frontend) =
   ## Claims an empty human seat once per room, retrying contested assignments.
@@ -555,6 +673,7 @@ proc syncLobby*(front: Frontend) =
   ## Caches local setup and starts from the immutable shared initialization.
   let client = front.connection.client
   if client.error.len > 0:
+    front.rematchStage = NoRematch
     let claimRace = front.autoSeatPending and front.autoSeatClaim >= 0 and
       (client.error == "Seat belongs to another participant" or
         (front.autoSeatClaim >= client.snapshot.seats.len and
@@ -571,6 +690,7 @@ proc syncLobby*(front: Frontend) =
     client.send(RoomMessage(kind: JoinRoom, room: front.invite))
     front.pendingJoin = false
   if client.snapshot.room.len == 0:
+    front.rematchStage = NoRematch
     front.pendingConfig = ""
     front.autoSeatRoom = ""
     front.autoSeatPending = false
@@ -594,7 +714,8 @@ proc syncLobby*(front: Frontend) =
   # Lobby is the authoritative end of the previous match for every participant,
   # not just the host who clicked ReturnLobby. Retain seats/config/private policy
   # bytes, but never reuse a started simulation as the next setup confirmation.
-  if client.snapshot.phase == Lobby and front.prepared != nil and front.prepared.started:
+  if client.snapshot.phase == Lobby and not client.began and
+    front.prepared != nil and front.prepared.started:
     front.prepared = nil
     front.launch = nil
     front.readyAttempt = 0
@@ -637,6 +758,7 @@ proc syncLobby*(front: Frontend) =
   if front.prepared != nil and front.prepared.started:
     front.prepared.refreshControllers(front.sources())
     front.prepared.resumeCommands()
+  front.syncRematch()
 
 proc localMatch*(front: Frontend): Session =
   ## Starts the configured FFA with the exact visible roster.

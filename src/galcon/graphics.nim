@@ -302,7 +302,10 @@ proc finishSession(view: View) =
         except GalconError:
           discard
 
-proc start(view: View, tutorial = 0, provided: Session = nil) =
+proc start(
+    view: View, tutorial = 0, provided: Session = nil,
+    preserveLaunchOptions = false
+) =
   ## Starts a seeded match or one of the original three tutorial maps.
   if view.session != nil:
     view.session.observer = nil
@@ -311,7 +314,8 @@ proc start(view: View, tutorial = 0, provided: Session = nil) =
   var options = view.options.clone()
   options.setup = options.matchSetup(view.difficulty, tutorial)
   view.session = if provided == nil: newSession(options) else: provided
-  view.session.applyLaunchOptions(view.options.game)
+  if not preserveLaunchOptions:
+    view.session.applyLaunchOptions(view.options.game)
   when not defined(emscripten):
     view.saveReplay = view.front.replayPreferences.saveReplay and
       not captureActive()
@@ -421,7 +425,8 @@ proc syncMatchScreen(view: View) =
       view.controls.cancelGesture()
       view.returnPending = false
       view.returnSent = false
-    elif snapshot.phase == Lobby:
+    elif snapshot.phase == Lobby and not view.front.connection.client.began and
+      not view.front.rematchPending():
       view.finishSession()
       view.front.page = LobbyMenu
       view.screen = FrontScreen
@@ -451,6 +456,26 @@ proc returnToMenu(view: View) =
   view.finishSession()
   view.front.leave()
   view.screen = MenuScreen
+
+proc rematchBattle(view: View) =
+  ## Restarts the finished roster with a new seed and fresh simulation state.
+  if view.session == nil or view.session.playback or view.tutorial > 0 or
+    view.returnPending or view.front.rematchPending():
+      return
+  try:
+    if view.session.networked:
+      if not view.front.canRematch():
+        return
+      view.finishSession()
+      view.front.requestRematch()
+    elif view.session.canRematch():
+      let
+        seed = view.front.nextBattleSeed(view.session.liveWorld.setup.seed)
+        next = view.session.rematch(seed)
+      view.start(provided = next, preserveLaunchOptions = true)
+    view.front.error = ""
+  except GalconError, RoomsError:
+    view.front.error = getCurrentExceptionMsg()
 
 proc syncResults(view: View, now: float64) =
   ## Drain Ended history first, then show the authoritative final world even if
@@ -666,7 +691,12 @@ proc drawSidebar(view: View) {.measure.} =
   view.drawChat()
   view.sk.popClipRect()
 
-proc resultButton(view: View): Rect =
+proc hasRematch(view: View): bool =
+  ## Imported replays and tutorial stages do not have a restartable roster.
+  view.session != nil and not view.session.playback and view.tutorial == 0 and
+    (view.session.networked or view.session.canRematch())
+
+proc resultButton(view: View, rematch = false): Rect =
   ## Centers a shared UI button beneath the board-scaled result rows.
   let
     players = view.session.world.setup.players.float32
@@ -674,8 +704,36 @@ proc resultButton(view: View): Rect =
     center = view.presentation.boardOrigin +
       vec2(Width.float32 / 2, (Height.float32 + height) / 2 - 34) *
         view.presentation.boardScale
-    width = min(280.0'f, 528 * view.presentation.boardScale)
-  rect(center - vec2(width / 2, 22), vec2(width, 44))
+    width =
+      if view.hasRematch():
+        min(280.0'f, (528 * view.presentation.boardScale - 16) / 2)
+      else:
+        min(280.0'f, 528 * view.presentation.boardScale)
+    shift =
+      if not view.hasRematch(): 0.0'f
+      elif rematch: -(width + 16) / 2
+      else: (width + 16) / 2
+  rect(center + vec2(shift - width / 2, -22), vec2(width, 44))
+
+proc drawRematchButton(view: View): bool =
+  ## Gives the host and local player a shared one-click fresh battle action.
+  if view.screen != EndScreen or not view.card.shown or not view.card.terminal or
+    not view.hasRematch():
+      return
+  let
+    button = view.resultButton(rematch = true)
+    pending = view.front.rematchPending()
+    authority =
+      if view.session.networked: view.front.canRematch()
+      else: view.session.canRematch()
+    enabled = authority and not view.returnPending and not pending and
+      view.matchMenu == HiddenMatchMenu and not debugMenuOpen and
+      not view.diagnosticsOwnInput
+    label =
+      if pending: "Starting rematch..."
+      elif view.session.networked and not authority: "Rematch (host)"
+      else: "Rematch"
+  view.front.menuButton(view.sk, label, button.xy, button.w, enabled = enabled)
 
 proc drawResultButton(view: View): bool =
   ## Uses the same themed widget and feedback as lobby and menu buttons.
@@ -694,8 +752,9 @@ proc drawResultButton(view: View): bool =
         "Return to Lobby"
       else:
         "Return to Menu"
-    enabled = not view.returnPending and view.matchMenu == HiddenMatchMenu and
-      not debugMenuOpen and not view.diagnosticsOwnInput
+    enabled = not view.returnPending and not view.front.rematchPending() and
+      view.matchMenu == HiddenMatchMenu and not debugMenuOpen and
+      not view.diagnosticsOwnInput
   view.front.menuButton(view.sk, label, button.xy, button.w, enabled = enabled)
 
 proc drawCard(view: View) {.measure.} =
@@ -1119,6 +1178,8 @@ proc handleInput(view: View) =
     return
   if view.screen == FrontScreen:
     return
+  if view.screen == EndScreen and view.front.rematchPending():
+    return
   if view.screen in {GameScreen, TutorialScreen} and window.actionPressed(MenuInput):
     view.matchMenu = GameMenu
     view.controls.cancelGesture()
@@ -1283,7 +1344,11 @@ proc frame(view: View) =
     if view.front.launch != nil:
       let next = view.front.launch
       view.front.launch = nil
-      view.start(provided = next)
+      let continuing = view.session != nil and view.session.networked and
+        view.session.done and next.networked
+      if continuing:
+        next.verbose = view.session.verbose
+      view.start(provided = next, preserveLaunchOptions = continuing)
     if view.session != nil and view.session.networked:
       let match = view.front.prepared
       if not view.transport.player.playing and
@@ -1408,9 +1473,13 @@ proc frame(view: View) =
       )
     if serial != view.transport.player.seekSerial:
       view.controls.holding = false
-  let returnClicked = view.drawResultButton()
+  let
+    rematchClicked = view.drawRematchButton()
+    returnClicked = view.drawResultButton()
   view.sk.endUi()
-  if returnClicked:
+  if rematchClicked:
+    view.rematchBattle()
+  elif returnClicked:
     view.returnToMenu()
   if view.matchMenu != HiddenMatchMenu or debugMenuOpen:
     view.sk.interactor = modalInteractions

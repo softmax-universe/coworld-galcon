@@ -540,6 +540,7 @@ testFlowRoutes()
 import test_deadlocks
 testDeadlocks()
 import test_flow_replays as _
+import test_local_rematch as _
 
 import test_lobby_relay as _
 when not defined(headless):
@@ -555,6 +556,7 @@ when not defined(headless):
   import test_lobby_graphics as _
   import test_lobby_identity as _
   import test_lobby_authority as _
+  import test_network_rematches as _
 import test_sparse_lobby, test_lobby_presentation as _
 testSparseLobby()
 import test_cosmetic_ready_authority as _
