@@ -26,7 +26,7 @@ type
 
 proc presentation*(size: Vec2, showTransport = true): Presentation =
   ## Fits the board and sidebar, reserving a bottom ribbon only for replays.
-  result.uiScale = min(size.x / 1360, size.y / 600)
+  result.uiScale = selectedUiScale(min(size.x / 1360, size.y / 600))
   result.uiScale = max(result.uiScale, 0.01'f)
   let
     logical = size / result.uiScale

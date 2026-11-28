@@ -1301,8 +1301,8 @@ proc layout(view: View) =
     view.sk.uiScale = view.presentation.uiScale
     view.offset = vec2(0)
   else:
-    view.sk.uiScale = min(view.window.size.x.float32 / Width,
-      view.window.size.y.float32 / Height)
+    view.sk.uiScale = selectedUiScale(min(view.window.size.x.float32 / Width,
+      view.window.size.y.float32 / Height))
     let logicalSize = view.window.size.vec2 / view.sk.uiScale
     view.offset = (logicalSize - vec2(Width, Height)) / 2
 
